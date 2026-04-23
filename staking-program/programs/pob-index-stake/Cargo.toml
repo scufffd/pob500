@@ -1,0 +1,22 @@
+[package]
+name = "pob-index-stake"
+version = "0.1.0"
+description = "POB Index — Solana staking program (Printr-style Proof of Belief, multi-reward)"
+edition = "2021"
+license = "Apache-2.0"
+
+[lib]
+crate-type = ["cdylib", "lib"]
+name = "pob_index_stake"
+
+[features]
+no-entrypoint = []
+no-idl = []
+no-log-ix-name = []
+cpi = ["no-entrypoint"]
+default = []
+idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
+
+[dependencies]
+anchor-lang = { version = "=0.31.0", features = ["init-if-needed"] }
+anchor-spl = { version = "=0.31.0", features = ["token", "token_2022", "associated_token"] }

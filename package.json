@@ -1,0 +1,29 @@
+{
+  "name": "pobindex-ui",
+  "private": true,
+  "version": "2.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.8",
+    "@solana/wallet-adapter-base": "^0.9.23",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/wallet-adapter-react-ui": "^0.9.35",
+    "@solana/wallet-adapter-wallets": "^0.19.32",
+    "@solana/web3.js": "^1.95.8",
+    "bn.js": "^5.2.1",
+    "buffer": "^6.0.3",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^4.2.1",
+    "vite": "^4.5.3",
+    "vite-plugin-node-polyfills": "^0.26.0"
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "name": "@pobindex/staking-sdk",
+  "version": "0.1.0",
+  "description": "TypeScript/JavaScript SDK for the pob-index-stake Anchor program",
+  "type": "module",
+  "main": "src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./idl": "./src/idl.json"
+  },
+  "files": [
+    "src"
+  ],
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@solana/spl-token": "^0.4.8",
+    "@solana/web3.js": "^1.95.8",
+    "bn.js": "^5.2.1"
+  }
+}

@@ -1,0 +1,41 @@
+# ── Secrets (NEVER commit) ────────────────────────────────────────────────────
+# Anything that looks like a wallet keypair, environment file, or worker state.
+# If you add new private material, drop it under one of these paths.
+.env
+.env.*
+!.env.example
+**/.secrets/
+**/secrets/
+
+# Any Solana keypair JSON anywhere in the tree. No exceptions — even program
+# deploy keypairs (mainnet + devnet) stay on the maintainer's machine and get
+# rsync'd to the server out-of-band.
+**/*keypair*.json
+**/*-key*.json
+**/devnetkeypair.json
+
+# Worker runtime state: contributions lists, vanity grinds, presale snapshots,
+# spend history sqlite, etc. These contain wallet addresses & in some cases
+# raw private keys (drill-keys, vanity-grind). Treat the whole dir as private.
+pobindex-worker/data/
+
+# ── Build artefacts ───────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.log
+.vite/
+
+# Anchor / Rust
+staking-program/target/
+staking-program/.anchor/
+staking-program/test-ledger/
+Cargo.lock
+
+# ── OS / editor noise ─────────────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

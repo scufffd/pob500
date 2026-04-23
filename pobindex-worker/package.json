@@ -1,0 +1,51 @@
+{
+  "name": "pobindex-worker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "POB Index — Printr Solana discovery, holder rewards, Raydium/Jupiter swaps",
+  "main": "src/server.js",
+  "scripts": {
+    "cycle": "node scripts/run-cycle.js",
+    "discover": "node scripts/run-cycle.js --discover-only",
+    "loop": "node scripts/run-loop.js",
+    "snapshot:rebuild": "node scripts/rebuild-snapshot.js",
+    "serve": "node src/server.js",
+    "basket:show": "node scripts/basket.js show",
+    "basket:refresh": "node scripts/basket.js refresh",
+    "basket:spend": "node scripts/basket.js spend",
+    "printr:claim": "node scripts/printr-claim.js",
+    "stake:init": "node scripts/stake-admin.js init",
+    "stake:add-reward": "node scripts/stake-admin.js add-reward",
+    "stake:sync-rewards": "node scripts/stake-admin.js sync-rewards",
+    "stake:register-stake-reward": "node scripts/stake-admin.js register-stake-reward",
+    "stake:push-rewards": "node scripts/stake-push-rewards.js",
+    "presale:scan": "node scripts/presale-scan.js",
+    "presale:scan:sequential": "node scripts/presale-scan.js --sequential-parsed",
+    "presale:preview": "node scripts/presale-preview.js",
+    "presale:distribute": "node scripts/presale-distribute.js",
+    "presale:devbuy-plan": "node scripts/presale-devbuy-plan.js",
+    "presale:devbuy-send": "node scripts/presale-devbuy-send.js",
+    "presale:devnet-drill": "node scripts/presale-devnet-drill.js",
+    "test:early-unstake": "node scripts/test-early-unstake.js",
+    "test:swap": "node scripts/test-swap.js",
+    "test:staking": "node scripts/test-staking-math.js",
+    "test:basket": "node scripts/test-basket-math.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.31.1",
+    "@meteora-ag/cp-amm-sdk": "^1.4.2",
+    "@meteora-ag/dynamic-bonding-curve-sdk": "^1.5.7",
+    "@solana/spl-token": "^0.3.9",
+    "@solana/web3.js": "^1.87.6",
+    "better-sqlite3": "^12.6.2",
+    "bn.js": "^5.2.1",
+    "bs58": "^5.0.0",
+    "dotenv": "^16.3.1",
+    "express": "^4.18.2",
+    "helius-sdk": "^1.0.17",
+    "node-fetch": "^3.3.2"
+  }
+}

@@ -1,0 +1,1584 @@
+{
+  "address": "65YrGaBL5ukm4SVcsEBoUgnqTrNXy2pDiPKeQKjSexVA",
+  "metadata": {
+    "name": "pob_index_stake",
+    "version": "0.1.0",
+    "spec": "0.1.0",
+    "description": "POB Index — Solana staking program (Printr-style Proof of Belief, multi-reward)"
+  },
+  "docs": [
+    "POB Index — Printr-style Proof of Belief staking.",
+    "",
+    "Design:",
+    "- Users lock the POB Index native mint into a pool-owned vault for one of",
+    "six POB tiers (1, 3, 7, 14, 21, 30 days).",
+    "- Longer locks earn a bigger multiplier (1.0x → 3.0x) on their share of",
+    "pool rewards.",
+    "- Rewards can be any SPL / Token-2022 mint. Treasury creates a `RewardMint`",
+    "account + vault for each token it wants to distribute (e.g. BELIEF, fat",
+    "choi), then calls `deposit_rewards` to fund the pool; this updates a",
+    "MasterChef-style `acc_per_share` accumulator (scaled by 1e18) weighted",
+    "by effective stake.",
+    "- Each position has one `RewardCheckpoint` per reward mint it has interacted",
+    "with; `claim` catches the checkpoint up to the pool accumulator and pays",
+    "out the accrued balance. `claim_push` is the same settlement but signed by",
+    "`pool.authority` for optional worker auto-payouts.",
+    "- `unstake` is only valid after `lock_end`.",
+    "- `unstake_early` exits before `lock_end` with a flat 10% principal penalty",
+    "that redistributes to remaining stakers via the stake-mint reward line."
+  ],
+  "instructions": [
+    {
+      "name": "add_reward_mint",
+      "discriminator": [
+        73,
+        212,
+        247,
+        51,
+        208,
+        62,
+        172,
+        188
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "reward_token_mint"
+        },
+        {
+          "name": "reward_mint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  114,
+                  101,
+                  119,
+                  97,
+                  114,
+                  100
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool"
+              },
+              {
+                "kind": "account",
+                "path": "reward_token_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "reward_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "pool"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "reward_token_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim",
+      "discriminator": [
+        62,
+        198,
+        214,
+        193,
+        213,
+        159,
+        108,
+        210
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint",
+            "position"
+          ]
+        },
+        {
+          "name": "reward_mint",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "checkpoint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  101,
+                  99,
+                  107,
+                  112,
+                  111,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "reward_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "claim_push",
+      "docs": [
+        "Authority-settled claim: same as `claim` but `pool.authority` signs (worker auto-payout)."
+      ],
+      "discriminator": [
+        248,
+        174,
+        240,
+        11,
+        252,
+        157,
+        231,
+        203
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "relations": [
+            "reward_mint",
+            "position"
+          ]
+        },
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "reward_mint",
+          "writable": true
+        },
+        {
+          "name": "mint"
+        },
+        {
+          "name": "vault",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "checkpoint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  101,
+                  99,
+                  107,
+                  112,
+                  111,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "reward_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "user_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "deposit_rewards",
+      "discriminator": [
+        52,
+        249,
+        112,
+        72,
+        206,
+        161,
+        196,
+        1
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "reward_mint",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "funder",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "funder_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "initialize_pool",
+      "discriminator": [
+        95,
+        180,
+        10,
+        172,
+        84,
+        174,
+        232,
+        40
+      ],
+      "accounts": [
+        {
+          "name": "authority",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "stake_mint"
+        },
+        {
+          "name": "pool",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  111,
+                  108
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "stake_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "account",
+                "path": "pool"
+              },
+              {
+                "kind": "account",
+                "path": "token_program"
+              },
+              {
+                "kind": "account",
+                "path": "stake_mint"
+              }
+            ],
+            "program": {
+              "kind": "const",
+              "value": [
+                140,
+                151,
+                37,
+                143,
+                78,
+                36,
+                137,
+                241,
+                187,
+                61,
+                16,
+                41,
+                20,
+                142,
+                13,
+                131,
+                11,
+                90,
+                19,
+                153,
+                218,
+                255,
+                16,
+                132,
+                4,
+                142,
+                123,
+                216,
+                219,
+                233,
+                248,
+                89
+              ]
+            }
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "associated_token_program",
+          "address": "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "prime_checkpoint",
+      "discriminator": [
+        20,
+        167,
+        88,
+        110,
+        51,
+        0,
+        85,
+        241
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint",
+            "position"
+          ]
+        },
+        {
+          "name": "reward_mint"
+        },
+        {
+          "name": "position"
+        },
+        {
+          "name": "checkpoint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  101,
+                  99,
+                  107,
+                  112,
+                  111,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "reward_mint"
+              }
+            ]
+          }
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Whoever pays rent for the checkpoint — may be the position owner, the",
+            "treasury, or any third party. Checked as `mut` + `Signer` only to cover",
+            "the rent lamports."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "stake",
+      "discriminator": [
+        206,
+        176,
+        202,
+        18,
+        200,
+        209,
+        179,
+        108
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "stake_mint",
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "user_token_account",
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool"
+              },
+              {
+                "kind": "account",
+                "path": "owner"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "lock_days",
+          "type": "u32"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "stake_for",
+      "docs": [
+        "Stake tokens on behalf of a beneficiary. Treasury / presale flow."
+      ],
+      "discriminator": [
+        251,
+        210,
+        204,
+        200,
+        95,
+        57,
+        68,
+        59
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "stake_mint",
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "payer",
+          "docs": [
+            "Treasury / presale wallet. Pays tokens + rent, signs the token transfer."
+          ],
+          "writable": true,
+          "signer": true
+        },
+        {
+          "name": "payer_token_account",
+          "docs": [
+            "Payer's source token account — must hold POB500 and be owned by `payer`."
+          ],
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  112,
+                  111,
+                  115,
+                  105,
+                  116,
+                  105,
+                  111,
+                  110
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "pool"
+              },
+              {
+                "kind": "arg",
+                "path": "beneficiary"
+              },
+              {
+                "kind": "arg",
+                "path": "nonce"
+              }
+            ]
+          }
+        },
+        {
+          "name": "token_program"
+        },
+        {
+          "name": "system_program",
+          "address": "11111111111111111111111111111111"
+        },
+        {
+          "name": "rent",
+          "address": "SysvarRent111111111111111111111111111111111"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        },
+        {
+          "name": "lock_days",
+          "type": "u32"
+        },
+        {
+          "name": "nonce",
+          "type": "u64"
+        },
+        {
+          "name": "beneficiary",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
+      "name": "unstake",
+      "discriminator": [
+        90,
+        95,
+        107,
+        42,
+        205,
+        124,
+        50,
+        225
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "stake_mint",
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "user_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    },
+    {
+      "name": "unstake_early",
+      "discriminator": [
+        246,
+        212,
+        81,
+        180,
+        65,
+        2,
+        126,
+        125
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "stake_mint",
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "stake_vault",
+          "writable": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "stake_reward_mint",
+          "docs": [
+            "The reward-mint record for the stake mint itself. Penalty redistributes",
+            "through this line so remaining stakers earn more of our native token.",
+            "Its `.vault` must equal `stake_vault` (enforced by constraint) so the",
+            "shared-vault invariant holds."
+          ],
+          "writable": true
+        },
+        {
+          "name": "position",
+          "writable": true
+        },
+        {
+          "name": "owner",
+          "writable": true,
+          "signer": true,
+          "relations": [
+            "position"
+          ]
+        },
+        {
+          "name": "user_token_account",
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": []
+    }
+  ],
+  "accounts": [
+    {
+      "name": "RewardCheckpoint",
+      "discriminator": [
+        84,
+        95,
+        32,
+        252,
+        106,
+        96,
+        47,
+        182
+      ]
+    },
+    {
+      "name": "RewardMint",
+      "discriminator": [
+        233,
+        63,
+        191,
+        22,
+        229,
+        91,
+        74,
+        155
+      ]
+    },
+    {
+      "name": "StakePool",
+      "discriminator": [
+        121,
+        34,
+        206,
+        21,
+        79,
+        127,
+        255,
+        28
+      ]
+    },
+    {
+      "name": "StakePosition",
+      "discriminator": [
+        78,
+        165,
+        30,
+        111,
+        171,
+        125,
+        11,
+        220
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "CheckpointPrimed",
+      "discriminator": [
+        252,
+        198,
+        164,
+        249,
+        161,
+        177,
+        94,
+        76
+      ]
+    },
+    {
+      "name": "Claimed",
+      "discriminator": [
+        217,
+        192,
+        123,
+        72,
+        108,
+        150,
+        248,
+        33
+      ]
+    },
+    {
+      "name": "PoolInitialized",
+      "discriminator": [
+        100,
+        118,
+        173,
+        87,
+        12,
+        198,
+        254,
+        229
+      ]
+    },
+    {
+      "name": "RewardsDeposited",
+      "discriminator": [
+        120,
+        19,
+        149,
+        33,
+        111,
+        163,
+        248,
+        156
+      ]
+    },
+    {
+      "name": "Staked",
+      "discriminator": [
+        11,
+        146,
+        45,
+        205,
+        230,
+        58,
+        213,
+        240
+      ]
+    },
+    {
+      "name": "StakedFor",
+      "discriminator": [
+        122,
+        137,
+        20,
+        43,
+        232,
+        149,
+        91,
+        173
+      ]
+    },
+    {
+      "name": "Unstaked",
+      "discriminator": [
+        27,
+        179,
+        156,
+        215,
+        47,
+        71,
+        195,
+        7
+      ]
+    },
+    {
+      "name": "UnstakedEarly",
+      "discriminator": [
+        128,
+        179,
+        67,
+        36,
+        227,
+        210,
+        118,
+        116
+      ]
+    }
+  ],
+  "errors": [
+    {
+      "code": 6000,
+      "name": "InvalidLockTier",
+      "msg": "Lock duration is not one of the allowed POB tiers"
+    },
+    {
+      "code": 6001,
+      "name": "ZeroAmount",
+      "msg": "Stake amount must be greater than zero"
+    },
+    {
+      "code": 6002,
+      "name": "ZeroReward",
+      "msg": "Reward amount must be greater than zero"
+    },
+    {
+      "code": 6003,
+      "name": "LockNotExpired",
+      "msg": "Lock has not expired yet"
+    },
+    {
+      "code": 6004,
+      "name": "LockAlreadyExpired",
+      "msg": "Lock has already expired — use `unstake` instead of `unstake_early`"
+    },
+    {
+      "code": 6005,
+      "name": "StakeMintRewardNotRegistered",
+      "msg": "Stake-mint reward line is not registered; admin must call add_reward_mint for the stake mint"
+    },
+    {
+      "code": 6006,
+      "name": "PositionClosed",
+      "msg": "Position is already closed"
+    },
+    {
+      "code": 6007,
+      "name": "Paused",
+      "msg": "Pool is paused"
+    },
+    {
+      "code": 6008,
+      "name": "MintMismatch",
+      "msg": "Reward mint does not belong to this pool"
+    },
+    {
+      "code": 6009,
+      "name": "PoolMismatch",
+      "msg": "Position does not belong to this pool"
+    },
+    {
+      "code": 6010,
+      "name": "NoEffectiveStake",
+      "msg": "Stake vault has no effective stake; nothing to accrue"
+    },
+    {
+      "code": 6011,
+      "name": "Overflow",
+      "msg": "Numeric overflow"
+    },
+    {
+      "code": 6012,
+      "name": "NotAuthority",
+      "msg": "Signer is not the pool authority"
+    },
+    {
+      "code": 6013,
+      "name": "InvalidBeneficiary",
+      "msg": "Beneficiary must not be the default pubkey"
+    },
+    {
+      "code": 6014,
+      "name": "WrongRewardRecipient",
+      "msg": "Reward payout ATA must be owned by the position owner"
+    }
+  ],
+  "types": [
+    {
+      "name": "CheckpointPrimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "acc_per_share",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Claimed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolInitialized",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_mint",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RewardCheckpoint",
+      "docs": [
+        "Per (position, reward_mint) accrual checkpoint so each position can claim",
+        "each reward independently."
+      ],
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "claimable",
+            "type": "u64"
+          },
+          {
+            "name": "total_claimed",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                16
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RewardMint",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "last_deposit_ts",
+            "type": "i64"
+          },
+          {
+            "name": "total_deposited",
+            "type": "u64"
+          },
+          {
+            "name": "total_claimed",
+            "type": "u64"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                64
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RewardsDeposited",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "acc_per_share",
+            "type": "u128"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakePool",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "stake_vault",
+            "type": "pubkey"
+          },
+          {
+            "name": "total_staked",
+            "type": "u64"
+          },
+          {
+            "name": "total_effective",
+            "type": "u128"
+          },
+          {
+            "name": "reward_mint_count",
+            "type": "u32"
+          },
+          {
+            "name": "created_at",
+            "type": "i64"
+          },
+          {
+            "name": "paused",
+            "type": "bool"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                128
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakePosition",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "bump",
+            "type": "u8"
+          },
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_bps",
+            "type": "u32"
+          },
+          {
+            "name": "effective",
+            "type": "u128"
+          },
+          {
+            "name": "lock_days",
+            "type": "u32"
+          },
+          {
+            "name": "lock_start",
+            "type": "i64"
+          },
+          {
+            "name": "lock_end",
+            "type": "i64"
+          },
+          {
+            "name": "closed",
+            "type": "bool"
+          },
+          {
+            "name": "reserved",
+            "type": {
+              "array": [
+                "u8",
+                32
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "Staked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_bps",
+            "type": "u32"
+          },
+          {
+            "name": "effective",
+            "type": "u128"
+          },
+          {
+            "name": "lock_end",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "StakedFor",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "beneficiary",
+            "type": "pubkey"
+          },
+          {
+            "name": "payer",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "multiplier_bps",
+            "type": "u32"
+          },
+          {
+            "name": "effective",
+            "type": "u128"
+          },
+          {
+            "name": "lock_end",
+            "type": "i64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "Unstaked",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "UnstakedEarly",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "owner",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "penalty",
+            "type": "u64"
+          },
+          {
+            "name": "refund",
+            "type": "u64"
+          },
+          {
+            "name": "redistributed",
+            "type": "bool"
+          },
+          {
+            "name": "pool_total_effective_after",
+            "type": "u128"
+          }
+        ]
+      }
+    }
+  ]
+}
