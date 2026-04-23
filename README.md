@@ -8,6 +8,3 @@ token rewards funded by creator fees, not emissions.
 - Staking Anchor program: `staking-program/` (mainnet id in `Anchor.toml`)
 - Off-chain worker: `pobindex-worker/` — claim, swap, deposit_rewards on a
   10-minute loop
-
-All secrets (`.env`, keypairs, worker `data/`) are gitignored and live on the
-deployment host only.
