@@ -105,9 +105,11 @@ async function runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigur
 
   // 3b) Optional: authority-push accrued rewards to each staker's ATA (claim_push).
   // Runs whenever the pool is configured — independent of POB_STAKE_DISTRIBUTE.
+  // Uses `adminKeypair` because the pool's `claim_push` requires the pool
+  // authority signer (set at `initialize_pool` time) — not the treasury.
   if (stakingConfigured && String(process.env.POB_STAKE_AUTO_PUSH_CLAIMS || '0') === '1') {
     try {
-      snapshot.rewardPush = await pushRewardClaims({ treasury });
+      snapshot.rewardPush = await pushRewardClaims({ treasury: adminKeypair });
     } catch (e) {
       snapshot.rewardPushError = e.message || String(e);
       logEvent('warn', 'pushRewardClaims failed', { error: e.message });

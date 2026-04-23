@@ -15,8 +15,13 @@ const config = require('../src/config');
 const { pushRewardClaims } = require('../src/stake-push-rewards');
 
 async function main() {
-  const treasury = config.parsePrivateKey(config.requireEnv('TREASURY_PRIVATE_KEY'));
-  const out = await pushRewardClaims({ treasury });
+  // `claim_push` requires the pool authority (set at initialize_pool). We use
+  // ADMIN_PRIVATE_KEY when present, otherwise fall back to TREASURY_PRIVATE_KEY
+  // for the single-wallet setup where the treasury is also the pool authority.
+  const authority = config.parsePrivateKey(
+    process.env.ADMIN_PRIVATE_KEY || config.requireEnv('TREASURY_PRIVATE_KEY'),
+  );
+  const out = await pushRewardClaims({ treasury: authority });
   console.log(JSON.stringify(out, null, 2));
 }
 
