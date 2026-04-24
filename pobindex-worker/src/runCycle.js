@@ -187,7 +187,7 @@ async function runCycle(opts = {}) {
     const admin = process.env.ADMIN_PRIVATE_KEY
       ? config.parsePrivateKey(process.env.ADMIN_PRIVATE_KEY)
       : treasury;
-    basket = await refreshBasket({ adminKeypair: admin, dryRun });
+    basket = await refreshBasket({ adminKeypair: admin, treasuryKeypair: treasury, dryRun });
   }
   snapshot.basket = basket
     ? {

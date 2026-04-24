@@ -28,6 +28,66 @@ const MIN_SPEND_LAMPORTS = Math.round(
   parseFloat(process.env.MIN_DISTRIBUTE_SOL || '0.02') * 1e9,
 );
 
+// A rent-exempt RewardCheckpoint PDA costs ~0.00173 SOL on mainnet (the exact
+// number depends on the on-chain struct size). We use 0.002 SOL here as a
+// slight over-estimate so we never miss a prime tx for ~770 lamports.
+const RENT_PER_CHECKPOINT_LAMPORTS = parseInt(
+  process.env.POB_STAKE_RENT_PER_CHECKPOINT_LAMPORTS || '2000000',
+  10,
+);
+// Fixed budget kept on the treasury to cover claim_push + ATA idempotent
+// creation tx fees for the upcoming reward-push batch. One push tx burns
+// ~5000 lamports in base fee plus priority; 0.05 SOL covers ~100 txs.
+const OPS_FEE_BUFFER_LAMPORTS = parseInt(
+  process.env.POB_STAKE_OPS_FEE_BUFFER_LAMPORTS || '50000000',
+  10,
+);
+// If the admin (pool-authority) wallet drops below this, we will NOT spend —
+// without admin SOL the claim_push phase can't sign. Keeps the treasury from
+// racing ahead while Brr starves.
+const ADMIN_MIN_LAMPORTS = parseInt(
+  process.env.POB_ADMIN_MIN_LAMPORTS || '20000000',
+  10,
+);
+
+/**
+ * Estimate the SOL the treasury must keep in reserve to safely run the
+ * upcoming prime_checkpoint + claim_push phases.
+ *
+ * Returns an upper bound (positions × reward-mints × rent) so we never
+ * over-spend and find ourselves unable to create checkpoints — the root
+ * cause of the 2026-04-24 reward blackout where prime_checkpoint failed
+ * with `Transfer: insufficient lamports 967217, need 1733040` and rewards
+ * stopped flowing for 7 hours.
+ */
+async function estimateStakingOpsReserveLamports({ connection, poolPk }) {
+  try {
+    const anchor = require('@coral-xyz/anchor');
+    const { StakingClient } = require('../../staking-sdk/src/client');
+    const sk = (process.env.STAKING_PROGRAM_ID || '').trim();
+    if (!sk || !poolPk) return OPS_FEE_BUFFER_LAMPORTS;
+    const wallet = new anchor.Wallet(anchor.web3.Keypair.generate());
+    const provider = new anchor.AnchorProvider(connection, wallet, { commitment: 'confirmed' });
+    const client = new StakingClient(provider, new PublicKey(sk));
+    await client.init();
+    const poolAcc = await client.program.account.stakingPool.fetchNullable(poolPk);
+    const rewardMintCount = poolAcc?.rewardMints?.length || 0;
+    if (rewardMintCount === 0) return OPS_FEE_BUFFER_LAMPORTS;
+    const positions = await client.program.account.position.all();
+    const activeCount = positions.filter((p) => !(p.account.amount?.isZero && p.account.amount.isZero())).length;
+    // Max bound: every active position × every reward mint could need a
+    // checkpoint created this cycle. Real number is usually lower because
+    // existing checkpoints are reused, but we'd rather over-reserve.
+    const maxCheckpoints = activeCount * rewardMintCount;
+    return OPS_FEE_BUFFER_LAMPORTS + maxCheckpoints * RENT_PER_CHECKPOINT_LAMPORTS;
+  } catch (e) {
+    logEvent('warn', 'Failed to estimate staking ops reserve — falling back to fee buffer only', {
+      error: e.message || String(e),
+    });
+    return OPS_FEE_BUFFER_LAMPORTS;
+  }
+}
+
 /**
  * Given basket entries (with weight ∈ [0,1]) and a total distributable
  * lamport budget, compute per-entry lamport budgets that:
@@ -122,14 +182,70 @@ async function runSpendCycle({ treasury, dryRun = false, basket: overrideBasket 
   }
 
   const bal = await config.connection.getBalance(treasury.publicKey);
-  const available = Math.max(0, bal - config.SOL_RESERVE_LAMPORTS);
+
+  // Gate the spend on admin (Brr / pool-authority) SOL. Without it, claim_push
+  // can't sign the reward-distribution txs, so buying basket tokens this cycle
+  // just parks value that can't be handed to stakers until Brr is refilled.
+  let adminPubkey = null;
+  try {
+    const adminRaw = (process.env.ADMIN_PRIVATE_KEY || '').trim();
+    if (adminRaw) adminPubkey = config.parsePrivateKey(adminRaw).publicKey;
+  } catch (e) {
+    // Non-fatal — treat as absent.
+  }
+  if (adminPubkey) {
+    try {
+      const adminBal = await config.connection.getBalance(adminPubkey);
+      if (adminBal < ADMIN_MIN_LAMPORTS) {
+        logEvent('warn', 'Spend cycle skipped — admin/authority SOL too low for reward push', {
+          admin: adminPubkey.toBase58(),
+          adminSol: adminBal / 1e9,
+          minAdminSol: ADMIN_MIN_LAMPORTS / 1e9,
+          treasurySol: bal / 1e9,
+        });
+        return {
+          skipped: 'admin_sol_too_low',
+          adminSol: adminBal / 1e9,
+          minAdminSol: ADMIN_MIN_LAMPORTS / 1e9,
+          treasuryBalanceSol: bal / 1e9,
+          basketVersion: basket.version,
+        };
+      }
+    } catch (e) {
+      logEvent('warn', 'Admin balance probe failed — proceeding with treasury-only guardrails', {
+        error: e.message || String(e),
+      });
+    }
+  }
+
+  // Dynamic reserve: base static reserve + enough SOL to cover the prime +
+  // reward-push costs that fire right after this spend. Without this, a busy
+  // pool drains treasury until prime_checkpoint fails `insufficient lamports`
+  // and rewards silently stop flowing.
+  const poolPk = stakingCfg.pool ? new PublicKey(stakingCfg.pool) : null;
+  const dynamicOpsReserve = await estimateStakingOpsReserveLamports({
+    connection: config.connection,
+    poolPk,
+  });
+  const effectiveReserve = Math.max(config.SOL_RESERVE_LAMPORTS, dynamicOpsReserve);
+  const available = Math.max(0, bal - effectiveReserve);
   const distLamports = Math.floor((available * config.DIST_PCT) / 100);
 
   if (distLamports < MIN_SPEND_LAMPORTS) {
+    logEvent('warn', 'Spend cycle skipped — treasury below ops-safe threshold', {
+      treasurySol: bal / 1e9,
+      staticReserveSol: config.SOL_RESERVE_LAMPORTS / 1e9,
+      dynamicOpsReserveSol: dynamicOpsReserve / 1e9,
+      effectiveReserveSol: effectiveReserve / 1e9,
+      distributableSol: distLamports / 1e9,
+      minSpendSol: MIN_SPEND_LAMPORTS / 1e9,
+      hint: 'Top up the treasury (bank) wallet. Rewards still push from existing SOL.',
+    });
     return {
       skipped: 'below_min_spend',
       basketVersion: basket.version,
       treasuryBalanceSol: bal / 1e9,
+      effectiveReserveSol: effectiveReserve / 1e9,
       distributableSol: distLamports / 1e9,
       minSpendSol: MIN_SPEND_LAMPORTS / 1e9,
     };

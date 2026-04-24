@@ -197,6 +197,7 @@ function stakingAvailable() {
  */
 async function refreshBasket(opts = {}) {
   const adminKeypair = opts.adminKeypair || null;
+  const treasuryKeypair = opts.treasuryKeypair || null;
   const dryRun = !!opts.dryRun;
 
   const current = loadCurrentBasket();
@@ -218,6 +219,7 @@ async function refreshBasket(opts = {}) {
         const r = await ensureRewardMintRegistered({
           mintBase58: e.mint,
           adminKeypair,
+          treasuryKeypair,
         });
         e.registered = true;
         registrationResults.push({ mint: e.mint, ...r });

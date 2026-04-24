@@ -59,8 +59,86 @@ function jitteredDelayMs(minutes) {
   return Math.max(5_000, Math.round(baseMs + offset));
 }
 
+async function topUpAdminIfNeeded({ treasury, adminKeypair }) {
+  if (!adminKeypair) return null;
+  const MIN_LAMPORTS = parseInt(process.env.POB_ADMIN_MIN_LAMPORTS || '50000000', 10);
+  const TARGET_LAMPORTS = parseInt(
+    process.env.POB_ADMIN_TARGET_LAMPORTS || String(MIN_LAMPORTS * 4),
+    10,
+  );
+  const MAX_SINGLE_TRANSFER = parseInt(
+    process.env.POB_ADMIN_TOPUP_MAX_LAMPORTS || '500000000',
+    10,
+  ); // 0.5 SOL safety cap per cycle
+  const connection = config.connection;
+  const [adminBal, treasuryBal] = await Promise.all([
+    connection.getBalance(adminKeypair.publicKey, 'confirmed'),
+    connection.getBalance(treasury.publicKey, 'confirmed'),
+  ]);
+  if (adminBal >= MIN_LAMPORTS) return null;
+  // For the top-up itself we only need to keep the treasury above its own
+  // transaction-fee floor (SOL_RESERVE is the separate, larger floor for
+  // the spend/swap cycle — gating top-ups on that would re-create the
+  // deadlock where both wallets go flat at the same time).
+  const TOPUP_TREASURY_FLOOR_LAMPORTS = parseInt(
+    process.env.POB_ADMIN_TOPUP_TREASURY_FLOOR_LAMPORTS || '30000000',
+    10,
+  );
+  const spare = Math.max(0, treasuryBal - TOPUP_TREASURY_FLOOR_LAMPORTS);
+  if (spare < 10_000_000) {
+    logEvent('warn', 'Admin top-up skipped — treasury also low', {
+      adminSol: adminBal / 1e9,
+      treasurySol: treasuryBal / 1e9,
+      treasuryFloorSol: TOPUP_TREASURY_FLOOR_LAMPORTS / 1e9,
+      hint: 'Fund the bank wallet to resume reward distribution.',
+    });
+    return null;
+  }
+  const needed = TARGET_LAMPORTS - adminBal;
+  const amount = Math.min(needed, spare, MAX_SINGLE_TRANSFER);
+  const {
+    Transaction,
+    SystemProgram,
+    sendAndConfirmTransaction,
+  } = require('@solana/web3.js');
+  const tx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: treasury.publicKey,
+      toPubkey: adminKeypair.publicKey,
+      lamports: amount,
+    }),
+  );
+  try {
+    const sig = await sendAndConfirmTransaction(connection, tx, [treasury], {
+      commitment: 'confirmed',
+    });
+    logEvent('info', 'Admin auto-topped up from treasury', {
+      admin: adminKeypair.publicKey.toBase58(),
+      amountSol: amount / 1e9,
+      priorAdminSol: adminBal / 1e9,
+      postAdminSol: (adminBal + amount) / 1e9,
+      signature: sig,
+    });
+    return { amountLamports: amount, signature: sig };
+  } catch (e) {
+    logEvent('warn', 'Admin auto-top-up failed', { error: e.message || String(e) });
+    return null;
+  }
+}
+
 async function runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigured }) {
   const snapshot = { startedAt: new Date().toISOString() };
+
+  // 0) Keep Brr (pool authority) funded. Without SOL on the admin wallet the
+  // spend/push cycle skips and rewards silently stall — the exact outage we
+  // just debugged. Auto-topping up at the top of every cycle turns a quiet
+  // failure into a self-healing operation as long as the treasury has SOL.
+  try {
+    const topup = await topUpAdminIfNeeded({ treasury, adminKeypair });
+    if (topup) snapshot.adminTopUp = topup;
+  } catch (e) {
+    logEvent('warn', 'topUpAdminIfNeeded threw', { error: e.message });
+  }
 
   // 1) Claim + sweep
   try {
@@ -77,7 +155,7 @@ async function runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigur
     let basket = loadCurrentBasket();
     if (!basket || isStale(basket)) {
       try {
-        basket = await refreshBasket({ adminKeypair });
+        basket = await refreshBasket({ adminKeypair, treasuryKeypair: treasury });
         snapshot.basketRefreshed = { version: basket.version };
       } catch (e) {
         snapshot.basketError = e.message || String(e);
@@ -105,11 +183,11 @@ async function runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigur
 
   // 3b) Optional: authority-push accrued rewards to each staker's ATA (claim_push).
   // Runs whenever the pool is configured — independent of POB_STAKE_DISTRIBUTE.
-  // Uses `adminKeypair` because the pool's `claim_push` requires the pool
-  // authority signer (set at `initialize_pool` time) — not the treasury.
+  // Treasury (Bank) pays tx fees + ATA rent; adminKeypair only signs as pool
+  // authority. This keeps the admin wallet from burning SOL on rent/fees.
   if (stakingConfigured && String(process.env.POB_STAKE_AUTO_PUSH_CLAIMS || '0') === '1') {
     try {
-      snapshot.rewardPush = await pushRewardClaims({ treasury: adminKeypair });
+      snapshot.rewardPush = await pushRewardClaims({ treasury, authority: adminKeypair });
     } catch (e) {
       snapshot.rewardPushError = e.message || String(e);
       logEvent('warn', 'pushRewardClaims failed', { error: e.message });

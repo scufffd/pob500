@@ -46,7 +46,7 @@ async function detectTokenProgram(connection, mint) {
  * @param {import('@solana/web3.js').Keypair} opts.adminKeypair
  * @returns {Promise<{status: 'registered'|'already'|'skipped', signature?: string, tokenProgram?: string}>}
  */
-async function ensureRewardMintRegistered({ mintBase58, adminKeypair }) {
+async function ensureRewardMintRegistered({ mintBase58, adminKeypair, treasuryKeypair = null }) {
   if (!process.env.POB_STAKE_PROGRAM_ID || !process.env.POB_STAKE_MINT) {
     return { status: 'skipped' };
   }
@@ -120,15 +120,18 @@ async function ensureRewardMintRegistered({ mintBase58, adminKeypair }) {
   // claim handler's baseline-safe init (claim.rs) snapshots the *current*
   // acc_per_share when a position first claims a mint with no checkpoint —
   // so if we deposit before priming, existing stakers baseline post-deposit
-  // and permanently miss that round's rewards. We pay the checkpoint rent
-  // here (admin keypair) so stakers don't need to be online between basket
-  // rotations. Priming is permissionless and always snapshots the live
-  // acc_per_share (currently 0), so this is safe to retry.
+  // and permanently miss that round's rewards.
+  //
+  // Priming is PERMISSIONLESS, so we pay rent from the treasury (Bank) when
+  // it's available rather than draining the pool-authority (Brr). A busy
+  // basket rotates several times per hour, and each rotation with ~120
+  // positions would otherwise burn ~0.2 SOL of Brr — the exact leak that
+  // made Brr fall below the admin-health floor and stop reward pushes.
   const primeResult = await primeAllPositions({
     program,
     pool,
     rewardMintPda,
-    payer: adminKeypair,
+    payer: treasuryKeypair || adminKeypair,
   });
 
   return {
@@ -147,7 +150,12 @@ async function ensureRewardMintRegistered({ mintBase58, adminKeypair }) {
  * client-side saves CU + RPC). Returns a summary suitable for logging.
  */
 async function primeAllPositions({ program, pool, rewardMintPda, payer }) {
-  const { PublicKey: Pk } = require('@solana/web3.js');
+  const {
+    PublicKey: Pk,
+    Transaction,
+    sendAndConfirmTransaction,
+  } = require('@solana/web3.js');
+  const connection = program.provider.connection;
   // Pool-scoped scan: offset 8 + 1 = 9 (skip discriminator + bump).
   const positions = (await program.account.stakePosition.all([
     { memcmp: { offset: 8 + 1, bytes: pool.toBase58() } },
@@ -157,33 +165,52 @@ async function primeAllPositions({ program, pool, rewardMintPda, payer }) {
   const skipped = [];
   const failed = [];
 
+  // Build ixs for missing checkpoints only. `prime_checkpoint` is
+  // permissionless (the on-chain handler doesn't require any authority
+  // signer), so we send the txs ourselves with `payer` — typically Bank —
+  // bypassing whatever signer anchor's provider was built with. This keeps
+  // Brr (pool authority) solvent across basket rotations.
+  const toPrime = [];
   for (const pos of positions) {
     const [checkpointPda] = Pk.findProgramAddressSync(
       [Buffer.from('checkpoint'), pos.publicKey.toBuffer(), rewardMintPda.toBuffer()],
       program.programId,
     );
-    // Fast-path skip if checkpoint already exists.
     const existing = await program.account.rewardCheckpoint.fetchNullable(checkpointPda);
     if (existing) {
       skipped.push(pos.publicKey.toBase58());
       continue;
     }
+    toPrime.push({ position: pos.publicKey, checkpoint: checkpointPda });
+  }
+
+  for (const t of toPrime) {
     try {
-      const sig = await program.methods
+      const ix = await program.methods
         .primeCheckpoint()
         .accounts({
           pool,
           rewardMint: rewardMintPda,
-          position: pos.publicKey,
-          checkpoint: checkpointPda,
+          position: t.position,
+          checkpoint: t.checkpoint,
           payer: payer.publicKey,
           systemProgram: SystemProgram.programId,
           rent: SYSVAR_RENT_PUBKEY,
         })
-        .rpc();
-      primed.push({ position: pos.publicKey.toBase58(), signature: sig });
+        .instruction();
+      const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash('confirmed');
+      const tx = new Transaction({
+        feePayer: payer.publicKey,
+        blockhash,
+        lastValidBlockHeight,
+      }).add(ix);
+      const sig = await sendAndConfirmTransaction(connection, tx, [payer], {
+        commitment: 'confirmed',
+        skipPreflight: false,
+      });
+      primed.push({ position: t.position.toBase58(), signature: sig });
     } catch (e) {
-      failed.push({ position: pos.publicKey.toBase58(), error: e.message || String(e) });
+      failed.push({ position: t.position.toBase58(), error: e.message || String(e) });
     }
   }
 
@@ -192,6 +219,7 @@ async function primeAllPositions({ program, pool, rewardMintPda, payer }) {
     primed: primed.length,
     skipped: skipped.length,
     failed: failed.length,
+    payer: payer.publicKey.toBase58(),
   });
 
   return { primed, skipped, failed };

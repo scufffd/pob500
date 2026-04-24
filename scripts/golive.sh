@@ -99,8 +99,15 @@ rsync -a --delete -e "ssh -i $SSH_KEY" --exclude='node_modules' \
 # by hashing package-lock.json before + after and skipping the install when
 # they match (saves ~30s on no-dep rotations).
 log "5b/7 checking if npm ci needed on server"
+# `sha256sum` lives on Linux (server) but macOS ships `shasum -a 256`.
+# Pick whichever is available locally so the script works from either host.
+if command -v sha256sum >/dev/null 2>&1; then
+  SHA_BIN="sha256sum"
+else
+  SHA_BIN="shasum -a 256"
+fi
 REMOTE_LOCK_HASH=$(ssh -i "$SSH_KEY" "$SSH_HOST" "sha256sum $SRV_ROOT/pobindex-worker/package-lock.json | cut -d' ' -f1")
-LOCAL_LOCK_HASH=$(sha256sum pobindex-worker/package-lock.json | cut -d' ' -f1)
+LOCAL_LOCK_HASH=$($SHA_BIN pobindex-worker/package-lock.json | cut -d' ' -f1)
 if [[ "$REMOTE_LOCK_HASH" != "$LOCAL_LOCK_HASH" ]]; then
   log "     lockfile changed — running npm ci on server"
   ssh -i "$SSH_KEY" "$SSH_HOST" "cd $SRV_ROOT/pobindex-worker && npm ci --omit=dev"

@@ -227,6 +227,7 @@ module.exports = {
   DEFAULT_SWEEP_MIN_LAMPORTS,
   DEFAULT_SWEEP_BUFFER_LAMPORTS,
   claimViaPrintrTemplate,
+  discoverTemplateSigForPool,
 };
 
 function decodeIxData(ix) {
@@ -296,19 +297,74 @@ function rewritePubkey(pk, fromPk, toPk) {
  * Optional:
  * - PRINTR_CLAIM_DRY_RUN=1 (simulate only)
  */
+
+// Self-healing state. The pool's on-chain layout (vault sizes, fee cursor,
+// which quote-mint ATA currently holds claimable fees) drifts as trades happen
+// and Printr's own keepers run. A template that simulated fine an hour ago can
+// therefore start failing `Custom:1` on instruction 5 and stay stuck forever.
+// We detect this by counting consecutive simulation failures and rediscover a
+// fresh template from the pool's recent successful claims once the threshold
+// trips. The cache also avoids fetching the same template tx on every cycle,
+// which was the main driver of the RPC 429 storms.
+const MAX_SIM_FAILURES_BEFORE_REDISCOVERY = parseInt(
+  process.env.PRINTR_CLAIM_MAX_SIM_FAILURES || '3',
+  10,
+);
+let _cachedTemplateSig = null;
+let _cachedTemplateTx = null;
+let _consecutiveSimFailures = 0;
+let _lastRediscoveryAttempt = 0;
+
+async function _loadTemplateTx(connection, sig) {
+  if (_cachedTemplateSig === sig && _cachedTemplateTx) return _cachedTemplateTx;
+  const tx = await connection.getTransaction(sig, {
+    maxSupportedTransactionVersion: 0,
+    commitment: 'confirmed',
+  });
+  if (tx) {
+    _cachedTemplateSig = sig;
+    _cachedTemplateTx = tx;
+  }
+  return tx;
+}
+
 async function claimViaPrintrTemplate() {
-  let templateSig = (process.env.PRINTR_CLAIM_TEMPLATE_SIG || '').trim();
   const payerRaw = (process.env.PRINTR_CLAIM_FEEPAYER_PRIVATE_KEY || process.env.TREASURY_PRIVATE_KEY || '').trim();
   if (!payerRaw) {
     return { attempted: false, reason: 'missing PRINTR_CLAIM_FEEPAYER_PRIVATE_KEY / TREASURY_PRIVATE_KEY' };
   }
-
   const connection = config.connection;
-  if (!templateSig) {
-    const pool = (process.env.PRINTR_CLAIM_POOL || '').trim();
-    if (pool) {
-      templateSig = await discoverTemplateSigForPool(connection, pool);
+  const poolAddr = (process.env.PRINTR_CLAIM_POOL || '').trim();
+
+  // Template selection: env var first, cache next, then rediscover if needed.
+  // Rediscovery also fires when _consecutiveSimFailures crosses the threshold,
+  // which is how we recover from a stale template without manual intervention.
+  let templateSig = (process.env.PRINTR_CLAIM_TEMPLATE_SIG || '').trim();
+  const needRediscover = _consecutiveSimFailures >= MAX_SIM_FAILURES_BEFORE_REDISCOVERY;
+  if (needRediscover && poolAddr) {
+    const now = Date.now();
+    // Don't hammer the RPC rediscovering more than once every 60s even if
+    // something upstream calls us in a tight loop.
+    if (now - _lastRediscoveryAttempt > 60_000) {
+      _lastRediscoveryAttempt = now;
+      const fresh = await discoverTemplateSigForPool(connection, poolAddr, {
+        excludeSig: templateSig,
+      });
+      if (fresh && fresh !== templateSig) {
+        logEvent('warn', 'Printr claim template auto-rediscovered after repeated sim failures', {
+          oldSig: templateSig || null,
+          newSig: fresh,
+          consecutiveFailures: _consecutiveSimFailures,
+        });
+        templateSig = fresh;
+        _cachedTemplateSig = null;
+        _cachedTemplateTx = null;
+        _consecutiveSimFailures = 0;
+      }
     }
+  }
+  if (!templateSig && poolAddr) {
+    templateSig = await discoverTemplateSigForPool(connection, poolAddr);
   }
   if (!templateSig) {
     return {
@@ -318,11 +374,7 @@ async function claimViaPrintrTemplate() {
   }
 
   const payer = config.parsePrivateKey(payerRaw);
-
-  const tx = await connection.getTransaction(templateSig, {
-    maxSupportedTransactionVersion: 0,
-    commitment: 'confirmed',
-  });
+  const tx = await _loadTemplateTx(connection, templateSig);
   if (!tx) return { attempted: false, reason: 'template tx not found' };
 
   const { msg, allKeys, staticKeys } = getMessageKeys(tx);
@@ -383,13 +435,21 @@ async function claimViaPrintrTemplate() {
     logs: sim.value.logs || [],
   };
   if (sim.value.err) {
+    _consecutiveSimFailures += 1;
     out.sent = false;
     out.reason = 'simulation_failed';
+    out.consecutiveSimFailures = _consecutiveSimFailures;
+    out.willRediscoverNextCycle =
+      _consecutiveSimFailures >= MAX_SIM_FAILURES_BEFORE_REDISCOVERY && !!poolAddr;
     out.note =
       'No transaction was sent. Usually means zero claimable creator fees for this template, ' +
       'or the on-chain state no longer matches the template. Safe to retry next cycle.';
     return out;
   }
+
+  // Simulation passed — clear the failure counter so any transient drift during
+  // pool oscillations doesn't accidentally trigger rediscovery.
+  _consecutiveSimFailures = 0;
 
   if (String(process.env.PRINTR_CLAIM_DRY_RUN || '0') === '1') {
     out.sent = false;
@@ -407,13 +467,15 @@ async function claimViaPrintrTemplate() {
   return out;
 }
 
-async function discoverTemplateSigForPool(connection, poolAddress) {
+async function discoverTemplateSigForPool(connection, poolAddress, opts = {}) {
   const T8_PROGRAM = 'T8HsGYv7sMk3kTnyaRqZrbRPuntYzdh12evXBkprint';
   const CLAIM_DISC = '1fc558ef7ba5c5d0';
+  const excludeSig = (opts.excludeSig || '').trim();
   const pool = new PublicKey(poolAddress);
   const sigs = await connection.getSignaturesForAddress(pool, { limit: 150 });
   for (const s of sigs) {
     if (s.err) continue;
+    if (excludeSig && s.signature === excludeSig) continue;
     const tx = await connection.getTransaction(s.signature, {
       maxSupportedTransactionVersion: 0,
       commitment: 'confirmed',

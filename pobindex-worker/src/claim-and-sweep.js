@@ -21,11 +21,36 @@ async function runClaimAndSweep({ treasuryPubkey }) {
   try {
     claim = await claimViaPrintrTemplate();
     if (claim && claim.attempted && !claim.sent && claim.simulation?.err) {
+      // After the counter crosses the rediscovery threshold we escalate to
+      // warn — that way ops noise stays quiet during normal "no fees yet"
+      // oscillations, but a genuinely stuck template lights up.
+      const stuck = claim.consecutiveSimFailures
+        && claim.consecutiveSimFailures >= 3;
       logEvent(
-        'info',
-        'Printr claim skipped after simulation (no claimable fees or template mismatch)',
-        { err: claim.simulation.err, templateSig: claim.templateSig || null },
+        stuck ? 'warn' : 'info',
+        stuck
+          ? 'Printr claim stuck on repeated sim failures — will auto-rediscover template next cycle'
+          : 'Printr claim skipped after simulation (no claimable fees or template mismatch)',
+        {
+          err: claim.simulation.err,
+          templateSig: claim.templateSig || null,
+          consecutiveSimFailures: claim.consecutiveSimFailures || 0,
+          willRediscoverNextCycle: !!claim.willRediscoverNextCycle,
+        },
       );
+    } else if (claim && claim.attempted && claim.sent) {
+      // Summarize whether the replay actually moved SOL (typical "no quote
+      // fees to distribute" log from Printr means tx lands but claims 0).
+      const zeroFees = (claim.simulation?.logs || []).some((l) =>
+        /no quote fees to distribute/i.test(l),
+      );
+      logEvent('info', 'Printr claim replayed', {
+        signature: claim.signature,
+        zeroFees,
+        instructionCount: claim.instructionCount,
+      });
+    } else if (claim && !claim.attempted) {
+      logEvent('info', 'Printr claim not attempted', { reason: claim.reason });
     }
   } catch (e) {
     logEvent('warn', 'Printr claim failed', { error: e.message || String(e) });
