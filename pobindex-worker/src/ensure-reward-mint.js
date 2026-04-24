@@ -56,6 +56,16 @@ async function ensureRewardMintRegistered({ mintBase58, adminKeypair, treasuryKe
   const stakeMint = new PublicKey(process.env.POB_STAKE_MINT);
   const rewardTokenMint = new PublicKey(mintBase58);
 
+  // Hard guard: never register the stake mint itself as a reward. It's already
+  // registered on older pools from before the basket filter excluded it, but
+  // prevents any future accidental re-registration / buyback loop.
+  if (rewardTokenMint.equals(stakeMint)) {
+    logEvent('warn', 'Refusing to register stake mint as its own reward', {
+      mint: mintBase58,
+    });
+    return { status: 'skipped', reason: 'stake_mint_same_as_reward' };
+  }
+
   const connection = config.stakeConnection;
 
   const idl = loadIdl(programId);

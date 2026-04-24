@@ -64,7 +64,24 @@ async function selectTopCandidates(candidates, opts = {}) {
   const minVolume24hUsd = opts.minVolume24hUsd ?? parseFloat(process.env.POB_MIN_VOL24H_USD || '10000');
   const minLiquidityUsd = opts.minLiquidityUsd ?? parseFloat(process.env.POB_MIN_LIQ_USD || '5000');
 
-  const enriched = await enrichAll(candidates);
+  // Exclude the staking mint itself — we never want to buy back our own
+  // token with creator fees and distribute it as a "reward", because stakers
+  // are already holders and it collapses every basket slot into POB500.
+  // Also respect an optional BASKET_EXCLUDE_MINTS env for manual denylists.
+  const excluded = new Set();
+  const stakeMint = (process.env.POB_STAKE_MINT || '').trim();
+  if (stakeMint) excluded.add(stakeMint);
+  const extra = (process.env.BASKET_EXCLUDE_MINTS || '')
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+  for (const m of extra) excluded.add(m);
+
+  const preFilter = excluded.size === 0
+    ? candidates
+    : candidates.filter((c) => !excluded.has(c.mint));
+
+  const enriched = await enrichAll(preFilter);
   const filtered = filterByFloors(enriched, {
     minMcapUsd: minMcapUsd,
     minVolume24hUsd: minVolume24hUsd,

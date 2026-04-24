@@ -109,6 +109,22 @@ async function sweepCreatorWallets(treasuryPubkey) {
     return { swept, skipped, totalLamports };
   }
 
+  // If the creator wallet is the same key as the pool authority (admin)
+  // we must preserve enough SOL for the authority to sign the upcoming
+  // spend/push cycle. Otherwise the sweep drains Brr below POB_ADMIN_MIN_LAMPORTS
+  // and the next runOnce skips the spend with "admin/authority SOL too low".
+  // Compute once so we don't reparse per-iteration.
+  const adminKey = (process.env.ADMIN_PRIVATE_KEY || '').trim();
+  let adminPubkeyStr = null;
+  if (adminKey) {
+    try {
+      adminPubkeyStr = config.parsePrivateKey(adminKey).publicKey.toBase58();
+    } catch (_) {
+      /* ignore */
+    }
+  }
+  const adminMinLamports = parseInt(process.env.POB_ADMIN_MIN_LAMPORTS || '50000000', 10);
+
   for (const w of wallets) {
     let kp;
     try {
@@ -118,7 +134,14 @@ async function sweepCreatorWallets(treasuryPubkey) {
       continue;
     }
     const min = w.minLamports ?? DEFAULT_SWEEP_MIN_LAMPORTS;
-    const buffer = w.bufferLamports ?? DEFAULT_SWEEP_BUFFER_LAMPORTS;
+    let buffer = w.bufferLamports ?? DEFAULT_SWEEP_BUFFER_LAMPORTS;
+    // If this creator wallet is also the pool authority, keep at least
+    // POB_ADMIN_MIN_LAMPORTS + buffer so the admin can still sign the next
+    // spend/push cycle. This is the guardrail that stopped "rewards stuck
+    // for hours" from recurring.
+    if (adminPubkeyStr && kp.publicKey.toBase58() === adminPubkeyStr) {
+      buffer = Math.max(buffer, adminMinLamports + buffer);
+    }
 
     try {
       const bal = await connection.getBalance(kp.publicKey, 'confirmed');

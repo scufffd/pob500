@@ -63,23 +63,62 @@ const ADMIN_MIN_LAMPORTS = parseInt(
 async function estimateStakingOpsReserveLamports({ connection, poolPk }) {
   try {
     const anchor = require('@coral-xyz/anchor');
-    const { StakingClient } = require('../../staking-sdk/src/client');
-    const sk = (process.env.STAKING_PROGRAM_ID || '').trim();
-    if (!sk || !poolPk) return OPS_FEE_BUFFER_LAMPORTS;
+    const programIdStr = (process.env.POB_STAKE_PROGRAM_ID || process.env.STAKING_PROGRAM_ID || '').trim();
+    if (!programIdStr || !poolPk) return OPS_FEE_BUFFER_LAMPORTS;
+    const idl = require(path.join(__dirname, '..', '..', 'staking-sdk', 'src', 'idl.json'));
     const wallet = new anchor.Wallet(anchor.web3.Keypair.generate());
     const provider = new anchor.AnchorProvider(connection, wallet, { commitment: 'confirmed' });
-    const client = new StakingClient(provider, new PublicKey(sk));
-    await client.init();
-    const poolAcc = await client.program.account.stakingPool.fetchNullable(poolPk);
-    const rewardMintCount = poolAcc?.rewardMints?.length || 0;
+    const programId = new PublicKey(programIdStr);
+    const program = new anchor.Program({ ...idl, address: programId.toBase58() }, provider);
+    const rewardMints = await program.account.rewardMint.all([
+      { memcmp: { offset: 8 + 1, bytes: poolPk.toBase58() } },
+    ]);
+    const rewardMintCount = rewardMints.length;
     if (rewardMintCount === 0) return OPS_FEE_BUFFER_LAMPORTS;
-    const positions = await client.program.account.position.all();
-    const activeCount = positions.filter((p) => !(p.account.amount?.isZero && p.account.amount.isZero())).length;
-    // Max bound: every active position × every reward mint could need a
-    // checkpoint created this cycle. Real number is usually lower because
-    // existing checkpoints are reused, but we'd rather over-reserve.
-    const maxCheckpoints = activeCount * rewardMintCount;
-    return OPS_FEE_BUFFER_LAMPORTS + maxCheckpoints * RENT_PER_CHECKPOINT_LAMPORTS;
+    const positions = await program.account.stakePosition.all([
+      { memcmp: { offset: 9, bytes: poolPk.toBase58() } },
+    ]);
+    const activeCount = positions.filter((p) => !p.account.closed).length;
+
+    // Count checkpoints that already exist on-chain so we only reserve for
+    // the *missing* ones. At steady state almost every (position × reward
+    // mint) pair already has a checkpoint and prime_checkpoint is a no-op.
+    // Fetching the existing set via a single memcmp scan is one RPC call
+    // and turns a wildly pessimistic `positions × mints × rent` estimate
+    // (~5.8 SOL with 139 positions × 21 mints) into the realistic number
+    // (usually < 0.1 SOL).
+    let existingCheckpoints = 0;
+    try {
+      const checkpoints = await program.account.rewardCheckpoint.all([
+        { memcmp: { offset: 8, bytes: poolPk.toBase58() } },
+      ]);
+      existingCheckpoints = checkpoints.length;
+    } catch (_) {
+      // If the RPC is slow or the account type differs across IDL versions,
+      // fall through to the safety cap below rather than over-reserving.
+      existingCheckpoints = 0;
+    }
+
+    const theoreticalMax = activeCount * rewardMintCount;
+    const missingCheckpoints = Math.max(0, theoreticalMax - existingCheckpoints);
+
+    // Hard ceiling on what we reserve, regardless of on-chain count. In a
+    // single cycle we realistically need to prime checkpoints for at most
+    // (a) brand-new reward mints just rotated into the basket, × active
+    // positions, or (b) newly-created stake positions × current reward mints.
+    // Both are bounded by small numbers in practice. Capping the cap at
+    // 0.2 SOL (~100 checkpoints) gives us >2× headroom and never again
+    // freezes the spend cycle because of a pessimistic dust estimate.
+    const MAX_RESERVE_FOR_CHECKPOINTS_LAMPORTS = parseInt(
+      process.env.POB_STAKE_MAX_RESERVE_LAMPORTS || '200000000',
+      10,
+    );
+    const rentReserve = Math.min(
+      missingCheckpoints * RENT_PER_CHECKPOINT_LAMPORTS,
+      MAX_RESERVE_FOR_CHECKPOINTS_LAMPORTS,
+    );
+
+    return OPS_FEE_BUFFER_LAMPORTS + rentReserve;
   } catch (e) {
     logEvent('warn', 'Failed to estimate staking ops reserve — falling back to fee buffer only', {
       error: e.message || String(e),
