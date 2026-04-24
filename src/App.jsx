@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import StakeView from "./stake/StakeView.jsx";
 import DocsView from "./docs/DocsView.jsx";
+import RewardDebugView from "./debug/RewardDebugView.jsx";
 import {
   HeroStatsRow,
   YourPosition,
@@ -9,7 +10,7 @@ import {
 } from "./dashboard/panels.jsx";
 
 const SORT_OPTIONS = ["POB Score", "Market Cap", "Price Perf.", "24h Vol", "Staked %"];
-const TABS = ["Index", "Stake", "Docs"];
+const TABS = ["Index", "Stake", "Debug", "Docs"];
 
 const CHAIN_CLR = { Solana: "#14F195" };
 const C = { cyan: "#00F5FF", violet: "#BF5AF2", green: "#14F195", yellow: "#FFD60A", red: "#FF6B6B" };
@@ -92,6 +93,7 @@ export default function App() {
     if (typeof window === "undefined") return "Index";
     const hash = window.location.hash.replace("#", "").toLowerCase();
     if (hash === "stake") return "Stake";
+    if (hash === "debug") return "Debug";
     if (hash === "docs") return "Docs";
     return "Index";
   });
@@ -101,6 +103,7 @@ export default function App() {
   useEffect(() => {
     if (typeof window === "undefined") return;
     if (tab === "Stake") window.location.hash = "#stake";
+    else if (tab === "Debug") window.location.hash = "#debug";
     else if (tab === "Docs") window.location.hash = "#docs";
     else window.location.hash = "";
   }, [tab]);
@@ -234,6 +237,8 @@ export default function App() {
           .docs-hero{padding:22px 18px !important}
           .docs-hero h2{font-size:24px !important}
           .docs-contracts-row{grid-template-columns:1fr !important}
+          .debug-grid{grid-template-columns:1fr !important}
+          .debug-stats{grid-template-columns:1fr 1fr !important}
 
           .footer-row{flex-direction:column !important;align-items:flex-start !important;gap:10px !important}
         }
@@ -310,6 +315,8 @@ export default function App() {
         <div className="app-content" style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 32px" }}>
           {tab === "Stake" ? (
             <StakeView />
+          ) : tab === "Debug" ? (
+            <RewardDebugView />
           ) : tab === "Docs" ? (
             <DocsView payload={payload} />
           ) : (<>

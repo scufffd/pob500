@@ -280,7 +280,6 @@ export default function StakeView() {
 
       const userAta = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeTokenProgram);
       const nonce = new BN(Date.now());
-      const position = client.positionPda(publicKey, nonce);
 
       const stakeIxs = [];
       try {
@@ -300,17 +299,6 @@ export default function StakeView() {
         }),
       );
 
-      // Prime one RewardCheckpoint per existing reward mint in the same tx so
-      // the new staker is baselined at the current acc_per_share and can't
-      // retroactively claim deposits made before they joined. If we overflow
-      // the 1232-byte packet budget we split into multiple txs, signed at
-      // once via signAllTransactions.
-      const primeIxs = await client.buildPrimeCheckpointIxs({
-        owner: publicKey,
-        position,
-        rewardMints,
-      });
-
       const TX_LIMIT = 1200;
       const { blockhash } = await connection.getLatestBlockhash('confirmed');
       const txFits = (t) => {
@@ -322,7 +310,11 @@ export default function StakeView() {
         }
       };
 
-      const allIxs = [...stakeIxs, ...primeIxs];
+      // Keep the user stake transaction focused on staking only. Reward
+      // checkpoint PDAs are rent-bearing accounts and can cost more SOL than
+      // some user wallets keep on hand; the worker primes them with Bank before
+      // the next reward spend instead.
+      const allIxs = stakeIxs;
       const txs = [];
       let cur = new Transaction({ recentBlockhash: blockhash, feePayer: publicKey });
       for (const ix of allIxs) {
@@ -349,7 +341,7 @@ export default function StakeView() {
           await connection.confirmTransaction(sig, 'confirmed');
         }
       }
-      setMsg({ kind: 'ok', text: `Staked · ${sig.slice(0, 8)}…` });
+      setMsg({ kind: 'ok', text: `Staked · ${sig.slice(0, 8)}… Reward checkpoints will be prepared automatically.` });
       setAmount('');
       await refresh();
     } catch (e) {
@@ -357,7 +349,7 @@ export default function StakeView() {
     } finally {
       setBusy(false);
     }
-  }, [client, publicKey, anchorWallet, amount, lockDays, stakeBalance, stakeDecimals, stakeMint, stakeTokenProgram, connection, refresh, rewardMints]);
+  }, [client, publicKey, anchorWallet, amount, lockDays, stakeBalance, stakeDecimals, stakeMint, stakeTokenProgram, connection, refresh]);
 
   const handleClaim = useCallback(
     async (position, rewardMintAcc) => {
@@ -527,7 +519,6 @@ export default function StakeView() {
         }
 
         const nonce = new BN(Date.now());
-        const newPosition = client.positionPda(publicKey, nonce);
         const stakeIxList = [];
         try {
           await getAccount(connection, userAta, 'confirmed', stakeProg);
@@ -545,15 +536,13 @@ export default function StakeView() {
             userTokenAccount: userAta,
           }),
         );
-        const primeIxs = await client.buildPrimeCheckpointIxs({
-          owner: publicKey,
-          position: newPosition,
-          rewardMints,
-        });
 
         const { blockhash: stakeBlockhash, lastValidBlockHeight: stakeLVBH } =
           await connection.getLatestBlockhash('confirmed');
-        const stakeAllIxs = [...stakeIxList, ...primeIxs];
+        // As with normal staking, Bank/worker primes reward checkpoints. This
+        // prevents low-SOL wallets from seeing a scary "insufficient lamports"
+        // error after the actual restake succeeds.
+        const stakeAllIxs = stakeIxList;
         const stakeTxs = [];
         let curStake = [];
         for (const ix of stakeAllIxs) {
@@ -591,7 +580,7 @@ export default function StakeView() {
 
         setMsg({
           kind: 'ok',
-          text: `Compounded · ${fmtTokens(freshBalance, stakeDecimals)} POB restaked at ${positionLockDays}d · ${String(lastSig).slice(0, 8)}…`,
+          text: `Compounded · ${fmtTokens(freshBalance, stakeDecimals)} POB restaked at ${positionLockDays}d · ${String(lastSig).slice(0, 8)}… Checkpoints will be prepared automatically.`,
         });
         await refresh();
       } catch (e) {

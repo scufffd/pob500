@@ -131,9 +131,10 @@ function packIxs(ixGroups, feePayer, recentBlockhash, priorityFeeIx) {
  * @param {object} opts
  * @param {import('@solana/web3.js').Keypair} opts.treasury    Fee payer + ATA rent payer (Bank)
  * @param {import('@solana/web3.js').Keypair} [opts.authority] Pool authority signer (defaults to treasury)
+ * @param {boolean} [opts.primeOnly] Only create missing checkpoints, then return
  * @returns {Promise<object>}
  */
-async function pushRewardClaims({ treasury, authority }) {
+async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
   const cfg = resolveStakingConfig();
   if (!cfg.configured || !cfg.programId || !cfg.stakeMint) {
     return { skipped: 'staking_not_configured' };
@@ -289,6 +290,16 @@ async function pushRewardClaims({ treasury, authority }) {
       attempted: toPrime.length,
       primed: primedCount,
     });
+  }
+
+  if (primeOnly) {
+    return {
+      skipped: 'prime_only',
+      positions: active.length,
+      rewardLines: rewardMints.length,
+      primedCheckpoints: primedCount,
+      pendingPrime: toPrime.length - primedCount,
+    };
   }
 
   if (work.length === 0) {

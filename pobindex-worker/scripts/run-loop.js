@@ -23,6 +23,7 @@
  */
 
 const path = require('path');
+const fs = require('fs');
 require('dotenv').config({ path: path.join(__dirname, '..', '.env') });
 
 const config = require('../src/config');
@@ -57,6 +58,137 @@ function jitteredDelayMs(minutes) {
   const spread = baseMs * JITTER_PCT;
   const offset = (Math.random() * 2 - 1) * spread;
   return Math.max(5_000, Math.round(baseMs + offset));
+}
+
+function rewardDebugPath() {
+  return process.env.POB_REWARD_DEBUG_JSON
+    || path.join(path.dirname(config.POBINDEX_DATA_JSON), 'reward-debug.json');
+}
+
+function explainSpend(spend) {
+  if (!spend) return 'Reward spend has not run yet in this worker session.';
+  if (!spend.skipped) {
+    const swaps = spend.swaps?.length ?? null;
+    const deposits = spend.deposit?.deposited?.length ?? null;
+    return `Latest reward spend completed${swaps != null ? ` with ${swaps} swap attempts` : ''}${deposits != null ? ` and ${deposits} pool deposits` : ''}.`;
+  }
+  if (spend.skipped === 'below_min_spend') {
+    return 'New reward buys are paused because the Bank treasury is below the operations reserve. Existing accrued rewards can still be pushed.';
+  }
+  if (spend.skipped === 'admin_sol_too_low') {
+    return 'New reward buys are paused because the pool authority wallet is below the SOL needed to sign reward pushes.';
+  }
+  if (spend.skipped === 'cooldown') {
+    return `Reward spend is cooling down. Next spend window opens in about ${spend.minutesUntilNext ?? '?'} minute(s).`;
+  }
+  return `Reward spend skipped: ${spend.skipped}.`;
+}
+
+function sanitizeClaim(claim) {
+  if (!claim) return null;
+  return {
+    attempted: !!claim.attempted,
+    claimed: claim.claimed ?? null,
+    zeroFees: !!claim.zeroFees,
+    instructionCount: claim.instructionCount ?? null,
+    signature: claim.signature || null,
+    skipped: claim.skipped || null,
+    error: claim.error || null,
+  };
+}
+
+function sanitizeSpend(spend) {
+  if (!spend) return null;
+  if (spend.skipped) return spend;
+  return {
+    completedAt: spend.completedAt,
+    basketVersion: spend.basketVersion,
+    treasuryBalanceSol: spend.treasuryBalanceSol,
+    distributableSol: spend.distributableSol,
+    budgets: Array.isArray(spend.budgets)
+      ? spend.budgets.map((b) => ({
+        mint: b.mint,
+        symbol: b.symbol,
+        sol: b.sol,
+        weight: b.weight,
+      }))
+      : [],
+    swaps: Array.isArray(spend.swaps)
+      ? spend.swaps.map((s) => ({
+        mint: s.mint,
+        symbol: s.symbol,
+        sol: s.sol,
+        swappedRaw: s.swappedRaw || null,
+        error: s.error || null,
+      }))
+      : [],
+    depositsSucceeded: spend.deposit?.deposited?.length || 0,
+    depositsSkipped: spend.deposit?.skipped?.length || 0,
+    dryRun: !!spend.dryRun,
+  };
+}
+
+async function writeRewardDebugStatus({ treasury, adminKeypair, snapshot, elapsedMs }) {
+  try {
+    const [treasuryLamports, adminLamports] = await Promise.all([
+      config.connection.getBalance(treasury.publicKey, 'confirmed'),
+      config.connection.getBalance(adminKeypair.publicKey, 'confirmed'),
+    ]);
+    const spend = sanitizeSpend(snapshot.spend || null);
+    const status = {
+      updatedAt: new Date().toISOString(),
+      worker: {
+        healthy: !snapshot.spendError && !snapshot.rewardPushError && !snapshot.claimSweepError,
+        cycleIntervalMin: CYCLE_INTERVAL_MIN,
+        spendIntervalMin: SPEND_INTERVAL_MIN,
+        elapsedMs,
+      },
+      wallets: {
+        treasury: {
+          label: 'Bank treasury',
+          publicKey: treasury.publicKey.toBase58(),
+          sol: treasuryLamports / 1e9,
+        },
+        authority: {
+          label: 'Brr pool authority',
+          publicKey: adminKeypair.publicKey.toBase58(),
+          sol: adminLamports / 1e9,
+          minSol: parseInt(process.env.POB_ADMIN_MIN_LAMPORTS || '50000000', 10) / 1e9,
+        },
+      },
+      reserve: {
+        staticReserveSol: config.SOL_RESERVE_LAMPORTS / 1e9,
+        effectiveReserveSol: spend?.effectiveReserveSol ?? null,
+        minSpendSol: spend?.minSpendSol ?? null,
+        distributableSol: spend?.distributableSol ?? null,
+      },
+      claim: sanitizeClaim(snapshot.claim),
+      sweep: snapshot.sweep ? {
+        sweptCount: snapshot.sweep.swept?.length || 0,
+        skippedCount: snapshot.sweep.skipped?.length || 0,
+        totalSol: (snapshot.sweep.totalLamports || 0) / 1e9,
+      } : null,
+      basket: snapshot.basketRefreshed || null,
+      spend,
+      rewardPush: snapshot.rewardPush ? {
+        skipped: snapshot.rewardPush.skipped || null,
+        workQueued: snapshot.rewardPush.workQueued || 0,
+        txsPacked: snapshot.rewardPush.txsPacked || 0,
+        txsSent: snapshot.rewardPush.txsSent || 0,
+        primedCheckpoints: snapshot.rewardPush.primedCheckpoints || 0,
+        positionsScanned: snapshot.rewardPush.positionsScanned || 0,
+      } : null,
+      explanation: explainSpend(spend),
+    };
+
+    const out = rewardDebugPath();
+    fs.mkdirSync(path.dirname(out), { recursive: true });
+    fs.writeFileSync(out, `${JSON.stringify(status, null, 2)}\n`);
+  } catch (e) {
+    logEvent('warn', 'Failed to write public reward-debug status', {
+      error: e.message || String(e),
+    });
+  }
 }
 
 async function topUpAdminIfNeeded({ treasury, adminKeypair }) {
@@ -166,6 +298,23 @@ async function runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigur
     }
   }
 
+  // 2b) Prime any new stake positions before the spend cycle deposits fresh
+  // rewards. The frontend no longer asks users to pay this rent, so Bank primes
+  // the baseline checkpoints here to avoid both user-facing SOL errors and
+  // missed first-cycle rewards.
+  if (stakingConfigured && String(process.env.POB_STAKE_AUTO_PUSH_CLAIMS || '0') === '1') {
+    try {
+      snapshot.preSpendPrime = await pushRewardClaims({
+        treasury,
+        authority: adminKeypair,
+        primeOnly: true,
+      });
+    } catch (e) {
+      snapshot.preSpendPrimeError = e.message || String(e);
+      logEvent('warn', 'pre-spend prime checkpoints failed', { error: e.message });
+    }
+  }
+
   // 3) Spend cycle (respects SPEND_INTERVAL_MIN cooldown)
   if (stakingEnabled && Date.now() - lastSpendAt >= SPEND_INTERVAL_MIN * 60_000) {
     try {
@@ -242,9 +391,11 @@ async function main() {
     const t0 = Date.now();
     try {
       const snap = await runOnce({ treasury, adminKeypair, stakingEnabled, stakingConfigured });
+      const elapsedMs = Date.now() - t0;
+      await writeRewardDebugStatus({ treasury, adminKeypair, snapshot: snap, elapsedMs });
       consecutiveErrors = 0;
       logEvent('info', 'cycle complete', {
-        elapsedMs: Date.now() - t0,
+        elapsedMs,
         spent: !!(snap.spend && !snap.spend.skipped),
         basketVersion: snap.basketRefreshed?.version ?? null,
       });
