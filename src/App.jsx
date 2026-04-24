@@ -174,6 +174,73 @@ export default function App() {
         .fadeup{animation:fadeup .35s ease both}
         .dot{animation:pulsedot 2.5s ease-in-out infinite;width:7px;height:7px;border-radius:50%;background:#14F195;box-shadow:0 0 6px #14F195}
         .mono{font-family:'JetBrains Mono',monospace}
+
+        /* ---------------- responsive (<= 900px) ---------------- */
+        @media (max-width: 900px) {
+          .app-header-wrap{padding:0 14px !important}
+          .app-header-inner{height:auto !important;flex-wrap:wrap !important;padding:10px 0 !important;gap:10px !important;row-gap:10px !important}
+          .app-header-left{flex-wrap:wrap !important;row-gap:8px !important;gap:8px !important}
+          .app-header-right{width:100% !important;justify-content:space-between !important;gap:10px !important}
+          .hdr-divider{display:none !important}
+          .hdr-subchain{display:none !important}
+          .hdr-data{font-size:9.5px !important;max-width:none !important;white-space:nowrap !important;overflow:hidden !important;text-overflow:ellipsis !important}
+          .app-trade-btn{padding:8px 14px !important;font-size:11px !important}
+
+          .app-content{padding:16px 14px !important}
+
+          .hero-panel{padding:20px 18px !important;border-radius:14px !important}
+          .hero-grid{grid-template-columns:1fr !important;gap:22px !important}
+          .hero-title{font-size:24px !important;line-height:1.18 !important}
+          .hero-copy{font-size:13.5px !important;max-width:none !important}
+          .hero-image{max-width:220px !important}
+
+          .index-grid{grid-template-columns:1fr !important;gap:12px !important}
+          .index-search{width:100% !important}
+          .index-row-header{display:none !important}
+          .index-toolbar{flex-direction:column !important;align-items:stretch !important;gap:10px !important}
+          .sort-tabs{overflow-x:auto !important;flex-wrap:nowrap !important;gap:14px !important;padding:0 14px !important;-webkit-overflow-scrolling:touch !important}
+          .sort-tabs .stab{white-space:nowrap !important;flex:0 0 auto !important}
+
+          .index-row{grid-template-columns:22px 1fr auto !important;grid-template-areas:"num name ring" "chg mcap stake" !important;row-gap:8px !important;column-gap:10px !important;padding:12px 14px !important}
+          .index-row > :nth-child(1){grid-area:num}
+          .index-row > :nth-child(2){grid-area:name}
+          .index-row > :nth-child(3){grid-area:chg}
+          .index-row > :nth-child(4){grid-area:mcap;text-align:right}
+          .index-row > :nth-child(5){grid-area:stake;justify-self:end;min-width:72px}
+          .index-row > :nth-child(6){display:none}
+          .index-row > :nth-child(7){display:none}
+          .index-row > :nth-child(8){grid-area:ring;justify-self:end}
+
+          .stake-grid{grid-template-columns:1fr !important;gap:12px !important}
+          .stake-pool-head{flex-direction:column !important;align-items:flex-start !important;gap:12px !important}
+          .stake-form-grid{grid-template-columns:1fr !important;gap:14px !important}
+          .stake-action-row{flex-direction:column !important;align-items:stretch !important;gap:10px !important}
+          .stake-action-row button{width:100% !important}
+          .position-head{flex-direction:column !important;align-items:flex-start !important;gap:4px !important}
+
+          .pos-grid{grid-template-columns:1fr !important;gap:14px !important}
+          .pos-head{flex-direction:column !important;align-items:flex-start !important;gap:10px !important}
+
+          .drawer-grid{grid-template-columns:1fr !important;gap:16px !important}
+
+          .bh-grid{grid-template-columns:1fr !important;gap:14px !important}
+          .bh-list{max-height:240px !important}
+          .bh-row{grid-template-columns:22px 1fr 60px 72px !important}
+
+          .docs-grid{grid-template-columns:1fr !important;gap:12px !important}
+          .docs-toc{position:static !important;display:none !important}
+          .docs-3col{grid-template-columns:1fr !important}
+          .docs-2col{grid-template-columns:1fr !important}
+          .docs-hero{padding:22px 18px !important}
+          .docs-hero h2{font-size:24px !important}
+          .docs-contracts-row{grid-template-columns:1fr !important}
+
+          .footer-row{flex-direction:column !important;align-items:flex-start !important;gap:10px !important}
+        }
+        @media (max-width: 540px) {
+          .hero-title{font-size:22px !important}
+          .stab{font-size:11px !important}
+        }
       `}</style>
 
       <div style={{ position: "fixed", inset: 0, zIndex: 0, pointerEvents: "none" }}>
@@ -184,9 +251,9 @@ export default function App() {
       </div>
 
       <div style={{ position: "relative", zIndex: 1 }}>
-        <div style={{ background: "rgba(6,10,18,.82)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.055)", padding: "0 32px", position: "sticky", top: 0, zIndex: 100 }}>
-          <div style={{ maxWidth: 1280, margin: "0 auto", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 11 }}>
+        <div className="app-header-wrap" style={{ background: "rgba(6,10,18,.82)", backdropFilter: "blur(20px)", WebkitBackdropFilter: "blur(20px)", borderBottom: "1px solid rgba(255,255,255,0.055)", padding: "0 32px", position: "sticky", top: 0, zIndex: 100 }}>
+          <div className="app-header-inner" style={{ maxWidth: 1280, margin: "0 auto", height: 60, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div className="app-header-left" style={{ display: "flex", alignItems: "center", gap: 11 }}>
               <div style={{ width: 34, height: 34, borderRadius: "50%", overflow: "hidden", flexShrink: 0, boxShadow: "0 0 22px rgba(191,90,242,.45), 0 0 0 1.5px rgba(0,245,255,.4)", background: "#060A12" }}>
                 <img
                   src="/pob-coin.png"
@@ -200,10 +267,10 @@ export default function App() {
                 <span style={{ fontSize: 16, fontWeight: 700, letterSpacing: "-0.01em" }}>POB500</span>
                 <span className="mono" style={{ fontSize: 8.5, fontWeight: 700, color: "rgba(255,255,255,.32)", letterSpacing: ".14em", marginTop: 3, textTransform: "uppercase" }}>Proof of Belief</span>
               </div>
-              <div style={{ width: 1, height: 18, background: "rgba(255,255,255,.07)", margin: "0 4px" }} />
-              <span style={{ fontSize: 11, color: "rgba(255,255,255,.28)", letterSpacing: ".04em" }}>Solana · Printr</span>
-              <div style={{ width: 1, height: 18, background: "rgba(255,255,255,.07)", margin: "0 4px" }} />
-              <div style={{ display: "flex", gap: 4 }}>
+              <div className="hdr-divider" style={{ width: 1, height: 18, background: "rgba(255,255,255,.07)", margin: "0 4px" }} />
+              <span className="hdr-subchain" style={{ fontSize: 11, color: "rgba(255,255,255,.28)", letterSpacing: ".04em" }}>Solana · Printr</span>
+              <div className="hdr-divider" style={{ width: 1, height: 18, background: "rgba(255,255,255,.07)", margin: "0 4px" }} />
+              <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
                 {TABS.map((name) => {
                   const active = tab === name;
                   return (
@@ -228,19 +295,19 @@ export default function App() {
                 })}
               </div>
             </div>
-            <div style={{ display: "flex", alignItems: "center", gap: 18 }}>
-              <div style={{ display: "flex", alignItems: "center", gap: 7 }}>
+            <div className="app-header-right" style={{ display: "flex", alignItems: "center", gap: 18 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 7, minWidth: 0 }}>
                 <div className="dot" />
-                <span className="mono" style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.38)" }}>DATA · {updated}</span>
+                <span className="mono hdr-data" style={{ fontSize: 11, fontWeight: 600, color: "rgba(255,255,255,.38)" }}>DATA · {updated}</span>
               </div>
-              <a href="https://app.printr.money" target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,rgba(191,90,242,.85),rgba(0,245,255,.85))", color: "#fff", borderRadius: 10, padding: "8px 18px", fontSize: 12, fontWeight: 700, textDecoration: "none", letterSpacing: ".04em", border: "1px solid rgba(255,255,255,.1)", boxShadow: "0 0 22px rgba(191,90,242,.28)" }}>
+              <a className="app-trade-btn" href="https://app.printr.money" target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,rgba(191,90,242,.85),rgba(0,245,255,.85))", color: "#fff", borderRadius: 10, padding: "8px 18px", fontSize: 12, fontWeight: 700, textDecoration: "none", letterSpacing: ".04em", border: "1px solid rgba(255,255,255,.1)", boxShadow: "0 0 22px rgba(191,90,242,.28)", whiteSpace: "nowrap" }}>
                 Trade on Printr →
               </a>
             </div>
           </div>
         </div>
 
-        <div style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 32px" }}>
+        <div className="app-content" style={{ maxWidth: 1280, margin: "0 auto", padding: "28px 32px" }}>
           {tab === "Stake" ? (
             <StakeView />
           ) : tab === "Docs" ? (
@@ -253,6 +320,7 @@ export default function App() {
           )}
 
           <div
+            className="hero-panel"
             style={{
               marginBottom: 22,
               padding: "28px 30px",
@@ -276,7 +344,7 @@ export default function App() {
                 pointerEvents: "none",
               }}
             />
-            <div style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 32, alignItems: "center", position: "relative" }}>
+            <div className="hero-grid" style={{ display: "grid", gridTemplateColumns: "1.6fr 1fr", gap: 32, alignItems: "center", position: "relative" }}>
               <div>
                 <div style={{ display: "flex", gap: 8, marginBottom: 14, flexWrap: "wrap" }}>
                   <span className="mono" style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: ".08em", padding: "3px 9px", borderRadius: 6, background: "rgba(191,90,242,.14)", border: "1px solid rgba(191,90,242,.38)", color: C.violet }}>
@@ -287,6 +355,7 @@ export default function App() {
                   </span>
                 </div>
                 <h1
+                  className="hero-title"
                   style={{
                     fontSize: 34,
                     fontWeight: 700,
@@ -301,7 +370,7 @@ export default function App() {
                 >
                   POB500 — one token, the whole Printr ecosystem.
                 </h1>
-                <div style={{ fontSize: 14.5, lineHeight: 1.7, color: "rgba(255,255,255,.62)", maxWidth: 620, marginBottom: 18 }}>
+                <div className="hero-copy" style={{ fontSize: 14.5, lineHeight: 1.7, color: "rgba(255,255,255,.62)", maxWidth: 620, marginBottom: 18 }}>
                   POB500 is the Proof of Belief index — an auto-rebalancing basket of the strongest
                   tokens launched on Printr, like an index ETF for the Printr ecosystem. Stake POB500,
                   and creator fees are swapped every 10 minutes into the current top performers,
@@ -381,6 +450,7 @@ export default function App() {
                   }}
                 />
                 <img
+                  className="hero-image"
                   src="/pob-coin.png"
                   alt="POB — Proof of Belief"
                   style={{
@@ -405,22 +475,22 @@ export default function App() {
 
           <YourPosition onGoStake={() => setTab("Stake")} />
 
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 286px", gap: 14, alignItems: "start" }}>
+          <div className="index-grid" style={{ display: "grid", gridTemplateColumns: "1fr 286px", gap: 14, alignItems: "start" }}>
 
             <div style={glass()}>
-              <div style={{ padding: "14px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+              <div className="index-toolbar" style={{ padding: "14px 20px", borderBottom: "1px solid rgba(255,255,255,0.05)", display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
                 <span className="mono" style={{ fontSize: 11, color: "rgba(255,255,255,.35)", flex: 1 }}>Solana only · Printr + DexScreener · POB score includes staked % (on-chain)</span>
                 <div style={{ position: "relative" }}>
-                  <input placeholder="Search…" value={q} onChange={e => setQ(e.target.value)} style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 9, padding: "6px 12px 6px 30px", fontSize: 12, fontFamily: "inherit", color: "#fff", outline: "none", width: 130 }} />
+                  <input className="index-search" placeholder="Search…" value={q} onChange={e => setQ(e.target.value)} style={{ background: "rgba(255,255,255,.05)", border: "1px solid rgba(255,255,255,.09)", borderRadius: 9, padding: "6px 12px 6px 30px", fontSize: 12, fontFamily: "inherit", color: "#fff", outline: "none", width: 130 }} />
                   <svg style={{ position: "absolute", left: 10, top: "50%", transform: "translateY(-50%)", opacity: .28 }} width="12" height="12" viewBox="0 0 12 12" fill="none"><circle cx="5" cy="5" r="4" stroke="white" strokeWidth="1.5" /><path d="M8.5 8.5L11 11" stroke="white" strokeWidth="1.5" strokeLinecap="round" /></svg>
                 </div>
               </div>
 
-              <div style={{ padding: "0 20px", borderBottom: "1px solid rgba(255,255,255,.05)", display: "flex", gap: 22 }}>
+              <div className="sort-tabs" style={{ padding: "0 20px", borderBottom: "1px solid rgba(255,255,255,.05)", display: "flex", gap: 22 }}>
                 {SORT_OPTIONS.map(s => <button key={s} className={`stab${sort === s ? " on" : ""}`} onClick={() => setSort(s)}>{s}</button>)}
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "28px 1.8fr 86px 84px 78px 72px 68px 46px", padding: "10px 20px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
+              <div className="index-row-header" style={{ display: "grid", gridTemplateColumns: "28px 1.8fr 86px 84px 78px 72px 68px 46px", padding: "10px 20px", borderBottom: "1px solid rgba(255,255,255,.04)" }}>
                 {["#", "Token", "24h", "Mcap", "Stake", "Lock", "APY", ""].map((h, i) => (
                   <div key={i} className="mono" style={{ fontSize: 9.5, fontWeight: 700, color: "rgba(255,255,255,.2)", letterSpacing: ".1em", textTransform: "uppercase" }}>{h}</div>
                 ))}
@@ -433,7 +503,7 @@ export default function App() {
                 const chg = t.change24h ?? 0;
                 return (
                   <div key={id}>
-                    <div className="tr fadeup" onClick={() => setSel(sel === id ? null : id)}
+                    <div className="tr fadeup index-row" onClick={() => setSel(sel === id ? null : id)}
                       style={{ display: "grid", gridTemplateColumns: "28px 1.8fr 86px 84px 78px 72px 68px 46px", padding: "13px 20px", background: sel === id ? "rgba(0,245,255,.04)" : "transparent", animationDelay: `${i * .035}s`, alignItems: "center" }}>
 
                       <span className="mono" style={{ fontSize: 10.5, color: "rgba(255,255,255,.17)", fontWeight: 500 }}>{i + 1}</span>
@@ -562,7 +632,7 @@ export default function App() {
 
           <BasketHistory history={payload?.basketHistory} />
 
-          <div style={{ marginTop: 22, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
+          <div className="footer-row" style={{ marginTop: 22, display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 12, alignItems: "center" }}>
             <span className="mono" style={{ fontSize: 10.5, color: "rgba(255,255,255,.13)" }}>
               POB500 · Proof of Belief · Solana · {payload?.sources?.candidates || "—"} · {payload?.sources?.metricsNote || ""}
             </span>

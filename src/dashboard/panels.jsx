@@ -332,7 +332,7 @@ export function YourPosition({ onGoStake }) {
 
   return (
     <div style={{ ...glass({ boxShadow: `0 0 0 1px ${C.cyan}14, 0 8px 40px rgba(0,0,0,.45)` }), padding: '18px 22px', marginBottom: 22 }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14 }}>
+      <div className="pos-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', flexWrap: 'wrap', gap: 14 }}>
         <div>
           <div style={label}>Your Position</div>
           <div style={{ fontSize: 20, fontWeight: 800, marginTop: 6 }}>
@@ -368,7 +368,7 @@ export function YourPosition({ onGoStake }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginTop: 16 }}>
+      <div className="pos-grid" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 16, marginTop: 16 }}>
         <div>
           <div style={{ ...label, marginBottom: 8 }}>Positions</div>
           <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
@@ -473,7 +473,7 @@ export function TokenDrawer({ token, recentSwaps }) {
 
   return (
     <div className="fadeup" style={{ padding: '18px 22px', background: 'rgba(0,245,255,.025)', borderTop: '1px solid rgba(0,245,255,.07)', borderBottom: '1px solid rgba(0,245,255,.07)' }}>
-      <div style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 22, alignItems: 'flex-start' }}>
+      <div className="drawer-grid" style={{ display: 'grid', gridTemplateColumns: '1.2fr 1fr', gap: 22, alignItems: 'flex-start' }}>
         <div>
           <div style={{ ...label, marginBottom: 7 }}>Description</div>
           <div style={{ fontSize: 13, color: 'rgba(255,255,255,.55)', lineHeight: 1.65 }}>
@@ -623,8 +623,8 @@ export function BasketHistory({ history }) {
         </div>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}>
+      <div className="bh-grid" style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 16 }}>
+        <div className="bh-list" style={{ display: 'flex', flexDirection: 'column', gap: 4, maxHeight: 360, overflowY: 'auto' }}>
           {list.map((h) => {
             const active = h.version === sel.version;
             return (
@@ -691,6 +691,7 @@ export function BasketHistory({ history }) {
               return (
                 <div
                   key={e.mint}
+                  className="bh-row"
                   style={{
                     display: 'grid',
                     gridTemplateColumns: '22px 1fr 70px 80px',

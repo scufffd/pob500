@@ -195,8 +195,8 @@ export default function DocsView({ payload }) {
   };
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 20, alignItems: "start" }}>
-      <div style={{ position: "sticky", top: 80 }}>
+    <div className="docs-grid" style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 20, alignItems: "start" }}>
+      <div className="docs-toc" style={{ position: "sticky", top: 80 }}>
         <div
           className="mono"
           style={{
@@ -245,6 +245,7 @@ export default function DocsView({ payload }) {
 
       <div style={{ display: "flex", flexDirection: "column", gap: 18 }}>
         <div
+          className="docs-hero"
           style={{
             ...glass({
               boxShadow: `0 0 0 1px rgba(191,90,242,.22), 0 12px 60px rgba(191,90,242,.12), inset 0 1px 0 rgba(255,255,255,.05)`,
@@ -284,7 +285,7 @@ export default function DocsView({ payload }) {
               having to trade every launch yourself.
             </P>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 16 }}>
+            <div className="docs-3col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginTop: 16 }}>
               {[
                 { t: "One token, many exposures", b: "Stake POB500, earn a rotating basket of top Printr tokens.", c: C.violet },
                 { t: "Auto-rebalancing", b: "The basket refreshes every 10 minutes based on live metrics.", c: C.cyan },
@@ -601,7 +602,7 @@ export default function DocsView({ payload }) {
           <Card>
             <H accent={C.green}>Trust model</H>
             <Title>Security</Title>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 6 }}>
+            <div className="docs-2col" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 6 }}>
               {[
                 ["Non-custodial", "Your stake lives in a pool-owned PDA. Only program instructions (which you sign) can move it."],
                 ["No mint authority", "The POB500 token mint authority is revoked after launch — no rug, no inflation, no surprise prints."],

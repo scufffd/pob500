@@ -51,6 +51,50 @@ function fmtTokens(raw, decimals) {
   return `${Number(whole).toLocaleString()}${frac ? '.' + frac : ''}`;
 }
 
+// Convert a decimal human string (e.g. "1234.5") to a raw BN at the given
+// token decimals without ever going through Number. Using `human *
+// 10**decimals` loses precision past 2^53 (~9×10^15), which for a 9-decimal
+// token means anything over ~9,000,000 tokens overflows and the resulting
+// `new BN(nonSafeInt)` throws "Assertion failed". This helper stays in
+// string-land so it works for any realistic supply.
+function parseAmountToRaw(input, decimals) {
+  if (input == null) throw new Error('Enter a valid amount');
+  let s = String(input).trim();
+  if (!s) throw new Error('Enter a valid amount');
+  // Allow common locale commas, strip them.
+  s = s.replace(/,/g, '');
+  if (s.startsWith('+')) s = s.slice(1);
+  if (s.startsWith('-')) throw new Error('Amount must be positive');
+  if (!/^\d*(?:\.\d*)?$/.test(s) || s === '.' || s === '') {
+    throw new Error('Enter a valid amount');
+  }
+  const [wholePart = '0', fracRaw = ''] = s.split('.');
+  // Truncate fractional part to `decimals` places (Solana has no sub-atomic
+  // units). Pad with zeros if shorter, so "1.5" with d=9 becomes
+  // "1" + "500000000".
+  const frac = fracRaw.slice(0, decimals).padEnd(decimals, '0');
+  const combined = (wholePart + frac).replace(/^0+(?=\d)/, '') || '0';
+  const raw = new BN(combined, 10);
+  if (raw.isZero()) throw new Error('Amount must be greater than zero');
+  return raw;
+}
+
+// Compute `raw * percent / 100` in pure BN, then format the result as a
+// decimal human string suitable for the amount input.
+function percentOfBalance(rawBalance, percent, decimals) {
+  if (!rawBalance) return '';
+  const bn = BN.isBN(rawBalance) ? rawBalance : new BN(String(rawBalance));
+  const slice = bn.muln(percent).divn(100);
+  const s = slice.toString();
+  if (s === '0') return '0';
+  if (s.length <= decimals) {
+    return `0.${s.padStart(decimals, '0').replace(/0+$/, '') || '0'}`;
+  }
+  const whole = s.slice(0, s.length - decimals);
+  const frac = s.slice(s.length - decimals).replace(/0+$/, '');
+  return frac ? `${whole}.${frac}` : whole;
+}
+
 function timeLeft(lockEnd) {
   const now = Math.floor(Date.now() / 1000);
   const end = Number(lockEnd);
@@ -72,10 +116,20 @@ export default function StakeView() {
   const [positions, setPositions] = useState([]);
   const [rewardMints, setRewardMints] = useState([]);
   const [checkpoints, setCheckpoints] = useState({}); // position|rewardMint -> ckpt
+  // Sentinel set once the full snapshot (pool+positions+rewardMints+checkpoints)
+  // has loaded at least once. While false the UI skips pending-reward math so we
+  // don't flash "claim everything since inception" values between partial state
+  // updates — a race where rewardMints would land before checkpoints and
+  // `ck?.accPerShare || 0` would momentarily default to 0, inflating pending.
+  const [snapshotReady, setSnapshotReady] = useState(false);
   const [stakeBalance, setStakeBalance] = useState(null);
   const [stakeDecimals, setStakeDecimals] = useState(9);
   const [rewardDecimals, setRewardDecimals] = useState({}); // rewardMintPda -> decimals
   const [rewardTokenPrograms, setRewardTokenPrograms] = useState({}); // rewardMintPda -> PublicKey
+  // mintBase58 -> BN wallet balance; surfaced as "in wallet" next to each reward
+  // so users can see tokens the worker has already auto-pushed via claim_push
+  // (without this counter, pending=0 after every push makes the UI look idle).
+  const [rewardWalletBalances, setRewardWalletBalances] = useState({});
   // mintBase58 -> { symbol, name } pulled from the Token-2022 metadata
   // extension. Keyed by the underlying SPL mint (not the RewardMint PDA) so it
   // can be shared between the reward cards and any future stake-mint display.
@@ -97,23 +151,25 @@ export default function StakeView() {
         client.fetchAllPositionsByOwner(publicKey),
         client.fetchAllRewardMints(),
       ]);
-      setPool(p);
-      setPositions(positionList);
-      setRewardMints(rewardList);
+
+      // Resolve token programs + decimals concurrently so we have a full picture
+      // before any setState. This is the key fix for the "pending briefly shows
+      // huge numbers" flicker: we only commit state once the matching checkpoints
+      // (below) have also loaded.
       const decimalsMap = {};
       const progMap = {};
-      for (const rm of rewardList) {
-        const progId = await detectTokenProgram(connection, rm.account.mint);
-        progMap[rm.publicKey.toBase58()] = progId;
-        try {
-          const m = await getMint(connection, rm.account.mint, 'confirmed', progId);
-          decimalsMap[rm.publicKey.toBase58()] = m.decimals;
-        } catch {
-          decimalsMap[rm.publicKey.toBase58()] = 9;
-        }
-      }
-      setRewardDecimals(decimalsMap);
-      setRewardTokenPrograms(progMap);
+      await Promise.all(
+        rewardList.map(async (rm) => {
+          const progId = await detectTokenProgram(connection, rm.account.mint);
+          progMap[rm.publicKey.toBase58()] = progId;
+          try {
+            const m = await getMint(connection, rm.account.mint, 'confirmed', progId);
+            decimalsMap[rm.publicKey.toBase58()] = m.decimals;
+          } catch {
+            decimalsMap[rm.publicKey.toBase58()] = 9;
+          }
+        }),
+      );
 
       // Resolve on-chain ticker/name from the Token-2022 metadata pointer
       // extension for every reward mint (and the stake mint). Printr tokens
@@ -125,43 +181,84 @@ export default function StakeView() {
         ...rewardList.map((rm) => ({ mint: rm.account.mint, prog: progMap[rm.publicKey.toBase58()] })),
         { mint: stakeMint, prog: stakeTokenProgram },
       ];
-      for (const { mint, prog } of mintsToResolve) {
-        const key = mint.toBase58();
-        if (tokenInfoRef.current[key] || infoUpdates[key]) continue; // already cached
-        if (!prog || !prog.equals(TOKEN_2022_PROGRAM_ID)) continue;
-        try {
-          const md = await getTokenMetadata(connection, mint, 'confirmed', prog);
-          if (md && (md.symbol || md.name)) {
-            infoUpdates[key] = { symbol: md.symbol || null, name: md.name || null };
+      await Promise.all(
+        mintsToResolve.map(async ({ mint, prog }) => {
+          const key = mint.toBase58();
+          if (tokenInfoRef.current[key] || infoUpdates[key]) return;
+          if (!prog || !prog.equals(TOKEN_2022_PROGRAM_ID)) return;
+          try {
+            const md = await getTokenMetadata(connection, mint, 'confirmed', prog);
+            if (md && (md.symbol || md.name)) {
+              infoUpdates[key] = { symbol: md.symbol || null, name: md.name || null };
+            }
+          } catch {
+            // Metadata extension absent or RPC hiccup — not fatal, UI will
+            // render the truncated mint instead.
           }
-        } catch (e) {
-          // Metadata extension absent or RPC hiccup — not fatal, UI will
-          // render the truncated mint instead.
-        }
+        }),
+      );
+
+      // Load every (position × reward mint) checkpoint BEFORE any setState so
+      // the first render using the new rewardMints always has matching ck data.
+      const ckMap = {};
+      await Promise.all(
+        positionList.flatMap((pos) =>
+          rewardList.map(async (rm) => {
+            const ck = await client.fetchCheckpoint(pos.publicKey, rm.publicKey);
+            if (ck) ckMap[`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`] = ck;
+          }),
+        ),
+      );
+
+      // Stake-mint wallet balance (for the "Your wallet" metric + stake form).
+      const mintInfo = await getMint(connection, stakeMint, 'confirmed', stakeTokenProgram);
+      const newStakeDecimals = mintInfo.decimals;
+      const stakeAta = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeTokenProgram);
+      let newStakeBalance;
+      try {
+        const acc = await getAccount(connection, stakeAta, 'confirmed', stakeTokenProgram);
+        newStakeBalance = new BN(acc.amount.toString());
+      } catch {
+        newStakeBalance = new BN(0);
       }
+
+      // Wallet balances for every reward-mint ATA so the UI can surface what
+      // the worker's claim_push has already delivered. After a push, pending
+      // always returns to 0 (correct on-chain state) — showing "In wallet"
+      // prevents users from thinking nothing is happening.
+      const walletBalancesByMint = {};
+      await Promise.all(
+        rewardList.map(async (rm) => {
+          const mintB58 = rm.account.mint.toBase58();
+          const prog = progMap[rm.publicKey.toBase58()];
+          if (!prog) return;
+          const ata = getAssociatedTokenAddressSync(rm.account.mint, publicKey, false, prog);
+          try {
+            const acc = await getAccount(connection, ata, 'confirmed', prog);
+            walletBalancesByMint[mintB58] = new BN(acc.amount.toString());
+          } catch {
+            walletBalancesByMint[mintB58] = new BN(0);
+          }
+        }),
+      );
+
+      // Commit everything in one pass. React 18 batches these synchronous sets
+      // into a single render, so consumers never see positions/rewardMints
+      // without the corresponding checkpoints.
+      setPool(p);
+      setPositions(positionList);
+      setRewardMints(rewardList);
+      setRewardDecimals(decimalsMap);
+      setRewardTokenPrograms(progMap);
+      setCheckpoints(ckMap);
+      setStakeDecimals(newStakeDecimals);
+      setStakeBalance(newStakeBalance);
+      setRewardWalletBalances(walletBalancesByMint);
       if (Object.keys(infoUpdates).length > 0) {
         tokenInfoRef.current = { ...tokenInfoRef.current, ...infoUpdates };
         setTokenInfo((prev) => ({ ...prev, ...infoUpdates }));
       }
-
-      const ckMap = {};
-      for (const pos of positionList) {
-        for (const rm of rewardList) {
-          const ck = await client.fetchCheckpoint(pos.publicKey, rm.publicKey);
-          if (ck) ckMap[`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`] = ck;
-        }
-      }
-      setCheckpoints(ckMap);
-
-      const mintInfo = await getMint(connection, stakeMint, 'confirmed', stakeTokenProgram);
-      setStakeDecimals(mintInfo.decimals);
-      const ata = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeTokenProgram);
-      try {
-        const acc = await getAccount(connection, ata, 'confirmed', stakeTokenProgram);
-        setStakeBalance(new BN(acc.amount.toString()));
-      } catch {
-        setStakeBalance(new BN(0));
-      }
+      setSnapshotReady(true);
     } catch (e) {
       console.error('refresh failed', e);
     }
@@ -178,9 +275,7 @@ export default function StakeView() {
     try {
       setBusy(true);
       setMsg(null);
-      const human = Number(amount);
-      if (!Number.isFinite(human) || human <= 0) throw new Error('Enter a valid amount');
-      const raw = new BN(Math.floor(human * 10 ** stakeDecimals));
+      const raw = parseAmountToRaw(amount, stakeDecimals);
       if (stakeBalance && raw.gt(stakeBalance)) throw new Error('Amount exceeds wallet balance');
 
       const userAta = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeTokenProgram);
@@ -308,6 +403,215 @@ export default function StakeView() {
       }
     },
     [client, publicKey, connection, refresh, rewardTokenPrograms],
+  );
+
+  // Compound: claims every pending reward on `position` (incl. any POB500
+  // reward line, e.g. from early-unstake penalty redistribution), then stakes
+  // the user's current POB500 wallet balance (post-claim) into a NEW position
+  // at the same `lockDays` as the source position. Multiplier and unlock
+  // horizon match, so effective weight compounds without changing the lock
+  // tier the user originally chose. Two wallet approvals: one batched claim
+  // sign + one stake sign — we have to wait for claims to land before we can
+  // read the fresh POB500 balance for the stake amount.
+  const handleCompound = useCallback(
+    async (position) => {
+      if (!client || !publicKey || !anchorWallet) return;
+      try {
+        setBusy(true);
+        setMsg(null);
+
+        const provider = client.program.provider;
+        const positionLockDays = position.account.lockDays;
+        if (!LOCK_TIERS.find((t) => t.days === positionLockDays)) {
+          throw new Error(`Unsupported lock tier on source position (${positionLockDays}d)`);
+        }
+
+        // -------- Phase 1: claim every pending reward on the source position
+        const claimAtaIxs = [];
+        const ensureAtas = async ({ mint, ata, tokenProgram }) => {
+          try {
+            await getAccount(connection, ata, 'confirmed', tokenProgram);
+          } catch {
+            claimAtaIxs.push(
+              createAssociatedTokenAccountInstruction(
+                publicKey,
+                ata,
+                publicKey,
+                mint,
+                tokenProgram,
+              ),
+            );
+          }
+        };
+        const claimIxs = await client.buildAutoClaimIxs({
+          owner: publicKey,
+          position: position.publicKey,
+          rewardMints,
+          rewardTokenPrograms,
+          connection,
+          checkpoints,
+          ensureAtas,
+        });
+
+        const { blockhash: claimBlockhash, lastValidBlockHeight: claimLVBH } =
+          await connection.getLatestBlockhash('confirmed');
+
+        const TX_LIMIT = 1200;
+        const buildTx = (ixs, blockhash) => {
+          const t = new Transaction();
+          t.feePayer = publicKey;
+          t.recentBlockhash = blockhash;
+          for (const ix of ixs) t.add(ix);
+          return t;
+        };
+        const txFits = (t) => {
+          try {
+            const len = t.serialize({ verifySignatures: false, requireAllSignatures: false }).length;
+            return len <= TX_LIMIT;
+          } catch {
+            return false;
+          }
+        };
+
+        const claimAllIxs = [...claimAtaIxs, ...claimIxs];
+        const claimTxs = [];
+        if (claimAllIxs.length > 0) {
+          let cur = [];
+          for (const ix of claimAllIxs) {
+            const candidate = buildTx([...cur, ix], claimBlockhash);
+            if (txFits(candidate) || cur.length === 0) {
+              cur.push(ix);
+            } else {
+              claimTxs.push(buildTx(cur, claimBlockhash));
+              cur = [ix];
+            }
+          }
+          if (cur.length > 0) claimTxs.push(buildTx(cur, claimBlockhash));
+        }
+
+        if (claimTxs.length > 0) {
+          setMsg({ kind: 'ok', text: `Step 1/2 — claiming (${claimTxs.length} tx${claimTxs.length > 1 ? 's' : ''})…` });
+          const signedClaims = await anchorWallet.signAllTransactions(claimTxs);
+          for (let i = 0; i < signedClaims.length; i += 1) {
+            const sig = await connection.sendRawTransaction(signedClaims[i].serialize(), {
+              skipPreflight: false,
+            });
+            await connection.confirmTransaction(
+              { signature: sig, blockhash: claimBlockhash, lastValidBlockHeight: claimLVBH },
+              'confirmed',
+            );
+          }
+        }
+
+        // -------- Phase 2: read fresh POB500 balance and restake at same tier
+        const stakeProg = await detectTokenProgram(connection, stakeMint);
+        const userAta = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeProg);
+        let freshBalance = new BN(0);
+        try {
+          const acc = await getAccount(connection, userAta, 'confirmed', stakeProg);
+          freshBalance = new BN(acc.amount.toString());
+        } catch {
+          freshBalance = new BN(0);
+        }
+
+        if (freshBalance.isZero()) {
+          setMsg({
+            kind: 'ok',
+            text:
+              claimTxs.length > 0
+                ? 'Claimed — no POB500 in wallet to restake. Sell basket rewards → buy POB500 → click Compound again.'
+                : 'Nothing to compound (no pending rewards, no POB500 balance).',
+          });
+          await refresh();
+          return;
+        }
+
+        const nonce = new BN(Date.now());
+        const newPosition = client.positionPda(publicKey, nonce);
+        const stakeIxList = [];
+        try {
+          await getAccount(connection, userAta, 'confirmed', stakeProg);
+        } catch {
+          stakeIxList.push(
+            createAssociatedTokenAccountInstruction(publicKey, userAta, publicKey, stakeMint, stakeProg),
+          );
+        }
+        stakeIxList.push(
+          await client.stakeIx({
+            owner: publicKey,
+            amount: freshBalance,
+            lockDays: positionLockDays,
+            nonce,
+            userTokenAccount: userAta,
+          }),
+        );
+        const primeIxs = await client.buildPrimeCheckpointIxs({
+          owner: publicKey,
+          position: newPosition,
+          rewardMints,
+        });
+
+        const { blockhash: stakeBlockhash, lastValidBlockHeight: stakeLVBH } =
+          await connection.getLatestBlockhash('confirmed');
+        const stakeAllIxs = [...stakeIxList, ...primeIxs];
+        const stakeTxs = [];
+        let curStake = [];
+        for (const ix of stakeAllIxs) {
+          const candidate = buildTx([...curStake, ix], stakeBlockhash);
+          if (txFits(candidate) || curStake.length === 0) {
+            curStake.push(ix);
+          } else {
+            stakeTxs.push(buildTx(curStake, stakeBlockhash));
+            curStake = [ix];
+          }
+        }
+        if (curStake.length > 0) stakeTxs.push(buildTx(curStake, stakeBlockhash));
+
+        setMsg({
+          kind: 'ok',
+          text: `Step 2/2 — restaking ${fmtTokens(freshBalance, stakeDecimals)} POB at ${positionLockDays}d (${(position.account.multiplierBps / 10_000).toFixed(2)}×)…`,
+        });
+
+        let lastSig;
+        if (stakeTxs.length === 1) {
+          lastSig = await provider.sendAndConfirm(stakeTxs[0]);
+        } else {
+          const signedStake = await anchorWallet.signAllTransactions(stakeTxs);
+          for (let i = 0; i < signedStake.length; i += 1) {
+            const sig = await connection.sendRawTransaction(signedStake[i].serialize(), {
+              skipPreflight: false,
+            });
+            await connection.confirmTransaction(
+              { signature: sig, blockhash: stakeBlockhash, lastValidBlockHeight: stakeLVBH },
+              'confirmed',
+            );
+            lastSig = sig;
+          }
+        }
+
+        setMsg({
+          kind: 'ok',
+          text: `Compounded · ${fmtTokens(freshBalance, stakeDecimals)} POB restaked at ${positionLockDays}d · ${String(lastSig).slice(0, 8)}…`,
+        });
+        await refresh();
+      } catch (e) {
+        setMsg({ kind: 'err', text: e.message || String(e) });
+      } finally {
+        setBusy(false);
+      }
+    },
+    [
+      client,
+      publicKey,
+      anchorWallet,
+      connection,
+      stakeMint,
+      stakeDecimals,
+      rewardMints,
+      rewardTokenPrograms,
+      checkpoints,
+      refresh,
+    ],
   );
 
   const handleUnstake = useCallback(
@@ -544,10 +848,10 @@ export default function StakeView() {
   }
 
   return (
-    <div style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 14, alignItems: 'start' }}>
+    <div className="stake-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 340px', gap: 14, alignItems: 'start' }}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
         <div style={{ ...glass(), padding: 24 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+          <div className="stake-pool-head" style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16, gap: 14, flexWrap: 'wrap' }}>
             <div>
               <div className="mono" style={{ fontSize: 9.5, fontWeight: 700, letterSpacing: '.1em', color: 'rgba(255,255,255,.25)', textTransform: 'uppercase', marginBottom: 5 }}>Pool</div>
               <div style={{ fontSize: 20, fontWeight: 800, letterSpacing: '-0.02em' }}>POB500 · Proof of Belief Stake</div>
@@ -585,7 +889,7 @@ export default function StakeView() {
             wallet ATAs, not vault custody, so you will not see incoming yMWEB transfers for staked amounts.
           </div>
 
-          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
+          <div className="stake-form-grid" style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 18 }}>
             <div>
               <label className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: 'rgba(255,255,255,.3)', textTransform: 'uppercase' }}>Amount</label>
               <input
@@ -608,8 +912,7 @@ export default function StakeView() {
                     disabled={!stakeBalance || busy}
                     onClick={() => {
                       if (!stakeBalance) return;
-                      const human = Number(stakeBalance.toString()) / 10 ** stakeDecimals;
-                      setAmount((human * (p / 100)).toString());
+                      setAmount(percentOfBalance(stakeBalance, p, stakeDecimals));
                     }}
                     style={{
                       flex: 1, padding: '6px 0', background: 'rgba(255,255,255,.04)', border: '1px solid rgba(255,255,255,.08)',
@@ -650,7 +953,7 @@ export default function StakeView() {
             </div>
           </div>
 
-          <div style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+          <div className="stake-action-row" style={{ marginTop: 18, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 12 }}>
             <div className="mono" style={{ fontSize: 11, color: 'rgba(255,255,255,.45)' }}>
               Effective weight · {(mySelected.multiplierBps / 10_000).toFixed(2)}× · unlock ~{lockDays}d
             </div>
@@ -692,7 +995,7 @@ export default function StakeView() {
             const unlocked = Number(p.account.lockEnd) <= Math.floor(Date.now() / 1000);
             return (
               <div key={p.publicKey.toBase58()} style={{ borderTop: '1px solid rgba(255,255,255,.05)', padding: '14px 0' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8 }}>
+                <div className="position-head" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 8, gap: 6, flexWrap: 'wrap' }}>
                   <div style={{ fontSize: 14, fontWeight: 800 }}>
                     {fmtTokens(p.account.amount, stakeDecimals)} POB · {(p.account.multiplierBps / 10_000).toFixed(2)}×
                   </div>
@@ -708,16 +1011,27 @@ export default function StakeView() {
                   {rewardMints.map((rm) => {
                     const key = `${p.publicKey.toBase58()}|${rm.publicKey.toBase58()}`;
                     const ck = checkpoints[key];
-                    const pending = computePending({
-                      accPerShare: rm.account.accPerShare,
-                      effective: p.account.effective,
-                      checkpointAcc: ck?.accPerShare || 0,
-                      claimable: ck?.claimable || 0,
-                    });
+                    // Only compute pending once the full snapshot is loaded AND
+                    // we have a real checkpoint. Before prime, the user's
+                    // baseline doesn't exist on-chain yet — showing a computed
+                    // delta against a 0 accPerShare would lie (over-state). The
+                    // worker primes missing checkpoints on the next cycle, and
+                    // then pending will surface correctly.
+                    const hasCheckpoint = ck != null;
+                    const pending = snapshotReady && hasCheckpoint
+                      ? computePending({
+                          accPerShare: rm.account.accPerShare,
+                          effective: p.account.effective,
+                          checkpointAcc: ck.accPerShare,
+                          claimable: ck.claimable,
+                        })
+                      : null;
                     const rewardDec = rewardDecimals[rm.publicKey.toBase58()] ?? 9;
                     const mintB58 = rm.account.mint.toBase58();
                     const info = tokenInfo[mintB58];
                     const ticker = info?.symbol || info?.name || null;
+                    const walletBal = rewardWalletBalances[mintB58];
+                    const hasWalletBal = walletBal && !walletBal.isZero();
                     return (
                       <div key={rm.publicKey.toBase58()} style={{ background: 'rgba(255,255,255,.03)', border: '1px solid rgba(255,255,255,.06)', borderRadius: 10, padding: 12 }}>
                         {ticker && (
@@ -732,15 +1046,32 @@ export default function StakeView() {
                         >
                           {mintB58.slice(0, 6)}…{mintB58.slice(-4)}
                         </div>
-                        <div className="mono" style={{ fontSize: 13, fontWeight: 700, color: C.cyan, marginBottom: 2 }}>
-                          {fmtTokens(pending, rewardDec)}
+                        <div
+                          className="mono"
+                          title="Pending rewards accrued since your last checkpoint. The worker usually auto-claims these every ~10 min — see 'In wallet' below."
+                          style={{ fontSize: 13, fontWeight: 700, color: C.cyan, marginBottom: 2 }}
+                        >
+                          {pending ? fmtTokens(pending, rewardDec) : (snapshotReady ? '0.0000' : '…')}
                         </div>
-                        <div className="mono" style={{ fontSize: 10, color: 'rgba(255,255,255,.45)', marginBottom: 8 }}>
-                          raw: {pending.toString()}
+                        <div className="mono" style={{ fontSize: 9.5, color: 'rgba(255,255,255,.4)', marginBottom: 6 }}>
+                          pending {pending ? `raw: ${pending.toString()}` : (snapshotReady && !hasCheckpoint ? '(awaiting prime)' : '…')}
+                        </div>
+                        <div
+                          className="mono"
+                          title="Your current wallet balance of this reward token. Rewards that the worker has already claim_push'd land here directly — so a high 'In wallet' + 0 'pending' is normal."
+                          style={{
+                            fontSize: 10.5,
+                            color: hasWalletBal ? C.green : 'rgba(255,255,255,.32)',
+                            marginBottom: 8,
+                            paddingTop: 6,
+                            borderTop: '1px solid rgba(255,255,255,.04)',
+                          }}
+                        >
+                          in wallet · {walletBal ? fmtTokens(walletBal, rewardDec) : '—'}
                         </div>
                         <button
                           onClick={() => handleClaim(p, rm)}
-                          disabled={busy || pending.isZero()}
+                          disabled={busy || !pending || pending.isZero()}
                           style={{
                             width: '100%', padding: '6px 0', borderRadius: 8, border: '1px solid rgba(0,245,255,.3)',
                             background: 'rgba(0,245,255,.08)', color: C.cyan,
@@ -757,7 +1088,18 @@ export default function StakeView() {
                   )}
                 </div>
 
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
+                <div className="position-actions" style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12, flexWrap: 'wrap' }}>
+                  <button
+                    onClick={() => handleCompound(p)}
+                    disabled={busy}
+                    title={`Claims every pending reward on this position, then restakes your full POB500 wallet balance at ${p.account.lockDays}d (${(p.account.multiplierBps / 10_000).toFixed(2)}×) — same tier as this position. Sell basket rewards & buy POB500 between clicks to maximise compound.`}
+                    style={{
+                      padding: '8px 18px', borderRadius: 10, border: '1px solid rgba(191,90,242,.45)',
+                      background: 'rgba(191,90,242,.12)', color: C.violet,
+                      fontFamily: 'Outfit, sans-serif', fontWeight: 700, fontSize: 12, letterSpacing: '.04em',
+                      cursor: busy ? 'not-allowed' : 'pointer',
+                    }}
+                  >Compound</button>
                   {!unlocked && (
                     <button
                       onClick={() => handleUnstakeEarly(p)}
@@ -798,7 +1140,8 @@ export default function StakeView() {
             <li>Lock POB500 for 1–30 days.</li>
             <li>Longer lock ⇒ bigger multiplier (up to 3.00×).</li>
             <li>Treasury deposits creator-fee rewards into the pool as the Printr tokens picked by the POB500 worker.</li>
-            <li>You claim each reward mint independently; tokens never leave custody of the pool PDA until you claim.</li>
+            <li><strong>Rewards are auto-pushed</strong> to your wallet every ~10 min — pending usually reads <b>0</b> because it already landed. Check <em>in wallet</em> under each token to see what you've received.</li>
+            <li><strong style={{ color: C.violet }}>Compound</strong> per position: claims all rewards then restakes your POB500 wallet balance at the <em>same</em> lock tier, preserving your multiplier. Sell rewards & top up POB500 between clicks for max effect.</li>
             <li>Early unstake: <strong>{(EARLY_UNSTAKE_PENALTY_BPS / 100).toFixed(0)}% penalty</strong> on principal, redistributed to remaining stakers. Accrued rewards are always yours.</li>
           </ul>
         </div>
