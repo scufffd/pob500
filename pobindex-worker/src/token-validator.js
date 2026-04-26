@@ -158,13 +158,63 @@ async function validateRewardMint(mintBase58) {
       warnings: [],
       probe: null,
       ok: true,
+      isStakeMint: false,
     };
   }
   const stakeMint = (process.env.POB_STAKE_MINT || '').trim();
-  if (stakeMint && stakeMint === mintBase58) {
-    const e = new Error('Stake mint cannot be its own reward');
-    e.code = 'stake_mint_not_allowed';
-    throw e;
+  const isStakeMint = stakeMint && stakeMint === mintBase58;
+  if (isStakeMint) {
+    // Allow the stake mint as a personalized reward — this is an off-chain
+    // auto-compound (swap SOL → POB500 → airdrop to wallet). It does NOT
+    // touch the on-chain pool's reward registration, so the buyback-loop
+    // concern that gates `add_reward_mint` does not apply here.
+    //
+    // Skip RugCheck/liquidity floors because (a) the worker already uses
+    // these Jupiter routes every cycle as part of the auto-basket flow, so
+    // routability is implicitly proven, and (b) blocking the project's own
+    // token on a generic risk score would be silly.
+    let mintInfo;
+    try {
+      mintInfo = await fetchMintInfo(mintBase58);
+    } catch (e) {
+      const err = new Error('Stake mint not found on Solana — POB_STAKE_MINT misconfigured?');
+      err.code = e.message;
+      throw err;
+    }
+    let programLabel;
+    try {
+      const det = await detectTokenProgram(mintInfo.mintPk);
+      programLabel = det.label;
+    } catch (e) {
+      const err = new Error('Stake mint owner is not a token program');
+      err.code = e.message;
+      throw err;
+    }
+    // Best-effort metadata fetch so the UI can show a ticker/price even
+    // though we never gate on these for the stake mint.
+    const dex = await fetchDexScreener(mintBase58);
+    return {
+      mint: mintBase58,
+      symbol: dex?.baseToken?.symbol || 'POB500',
+      name: dex?.baseToken?.name || 'Proof of Belief',
+      logoURI: null,
+      decimals: mintInfo.decimals,
+      tokenProgram: programLabel,
+      supply: mintInfo.supplyRaw / Math.pow(10, mintInfo.decimals || 9),
+      liquidityUsd: Number(dex?.liquidity?.usd || 0) || null,
+      volume24hUsd: Number(dex?.volume?.h24 || 0) || null,
+      priceUsd: dex?.priceUsd || null,
+      change24h: dex?.priceChange?.h24 != null ? Number(dex.priceChange.h24) : null,
+      rugcheckScore: null,
+      rugcheckRisks: null,
+      warnings: [{
+        code: 'stake_mint_compound',
+        message: 'POB500 selected as a personalized reward — this acts as auto-compound. Each cycle Faith buys POB500 for you and sends it to your wallet.',
+      }],
+      probe: null,
+      ok: true,
+      isStakeMint: true,
+    };
   }
 
   let mintInfo;

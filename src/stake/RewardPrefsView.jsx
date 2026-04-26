@@ -23,6 +23,7 @@ const glass = (extra = {}) => ({
 });
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
+const STAKE_MINT = import.meta.env.VITE_POB_STAKE_MINT || '';
 
 function apiBase() {
   return import.meta.env.VITE_POBINDEX_API_BASE || '';
@@ -188,6 +189,24 @@ export default function RewardPrefsView() {
     setAllocations((rows) => balanceWeights(rows));
   }, []);
 
+  const quickPick = useCallback((mint) => {
+    if (!mint) return;
+    setAllocations((rows) => {
+      const dupe = rows.find((r) => r.mint === mint);
+      if (dupe) return rows; // already in the list
+      const idleIdx = rows.findIndex((r) => !r.mint);
+      if (idleIdx >= 0) {
+        return rows.map((r, i) => (i === idleIdx
+          ? { ...r, mint, state: 'idle', info: null, error: null }
+          : r));
+      }
+      // No empty slots: drop the last row and replace it with the picked mint.
+      return rows.map((r, i) => (i === rows.length - 1
+        ? { ...r, mint, state: 'idle', info: null, error: null }
+        : r));
+    });
+  }, []);
+
   const save = useCallback(async () => {
     if (!wallet || !signMessage) {
       setMsg({ kind: 'err', text: 'Connect a wallet that supports message signing.' });
@@ -319,6 +338,42 @@ export default function RewardPrefsView() {
                 Total: {totalPct}% {totalPct === 100 ? '✓' : '(must be 100)'}
               </div>
               <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                {STAKE_MINT && (
+                  <button
+                    type="button"
+                    disabled={!connected}
+                    onClick={() => quickPick(STAKE_MINT)}
+                    title="Auto-compound: each cycle Faith buys POB500 for you"
+                    style={{
+                      padding: '7px 14px',
+                      borderRadius: 9,
+                      border: '1px solid rgba(191,90,242,.35)',
+                      background: 'rgba(191,90,242,.10)',
+                      color: C.violet,
+                      fontFamily: 'JetBrains Mono, monospace',
+                      fontSize: 11,
+                      fontWeight: 800,
+                      cursor: connected ? 'pointer' : 'not-allowed',
+                    }}
+                  >+ POB500 (compound)</button>
+                )}
+                <button
+                  type="button"
+                  disabled={!connected}
+                  onClick={() => quickPick(SOL_MINT)}
+                  title="Receive SOL directly each cycle"
+                  style={{
+                    padding: '7px 14px',
+                    borderRadius: 9,
+                    border: '1px solid rgba(0,245,255,.32)',
+                    background: 'rgba(0,245,255,.06)',
+                    color: C.cyan,
+                    fontFamily: 'JetBrains Mono, monospace',
+                    fontSize: 11,
+                    fontWeight: 800,
+                    cursor: connected ? 'pointer' : 'not-allowed',
+                  }}
+                >+ SOL</button>
                 <button
                   type="button"
                   disabled={!connected || allocations.length >= 3}
@@ -396,7 +451,8 @@ export default function RewardPrefsView() {
           <li>Your slice of the cycle is swapped into your chosen tokens and airdropped to your wallet.</li>
           <li>Auto-basket stakers continue to receive the rotated basket via the staking pool.</li>
           <li>Tokens are re-validated each cycle. If liquidity disappears or RugCheck risk spikes, you’re reverted to auto and notified here.</li>
-          <li>SOL is a valid choice — type the SOL mint <code>{shortMint(SOL_MINT)}</code> to receive lamports.</li>
+          <li><b style={{ color: C.violet }}>POB500 itself is allowed</b> — pick it to auto-compound. Each cycle Faith buys POB500 for you on the open market and sends it to your wallet, which you can restake any time.</li>
+          <li>SOL is a valid choice too — useful when Jupiter has no route for a tiny slice, the worker also auto-falls-back to SOL in that case.</li>
         </ul>
       </div>
     </div>
@@ -499,9 +555,12 @@ function AllocationRow({ index, allocation, onChange, onValidate, onRemove, canR
 
       {showInfo && (
         <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-          <div style={{ fontSize: 13, fontWeight: 700 }}>
-            {info.symbol || '—'}
-            <span className="mono" style={{ fontWeight: 500, color: 'rgba(255,255,255,.45)', marginLeft: 8 }}>{info.name || ''}</span>
+          <div style={{ fontSize: 13, fontWeight: 700, display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+            <span>{info.symbol || '—'}</span>
+            <span className="mono" style={{ fontWeight: 500, color: 'rgba(255,255,255,.45)' }}>{info.name || ''}</span>
+            {info.isStakeMint && (
+              <span className="mono" style={{ padding: '2px 7px', borderRadius: 6, background: 'rgba(191,90,242,.16)', border: '1px solid rgba(191,90,242,.35)', color: C.violet, fontSize: 9, fontWeight: 800, letterSpacing: '.06em', textTransform: 'uppercase' }}>auto-compound</span>
+            )}
           </div>
           <div className="mono" style={{ fontSize: 10.5, color: 'rgba(255,255,255,.55)' }}>
             liq <span style={{ color: '#fff' }}>{fmtUsd(info.liquidityUsd)}</span> · 24h vol <span style={{ color: '#fff' }}>{fmtUsd(info.volume24hUsd)}</span> · price <span style={{ color: '#fff' }}>{info.priceUsd ? `$${Number(info.priceUsd).toLocaleString(undefined, { maximumFractionDigits: 6 })}` : '—'}</span> · 24h <span style={{ color: info.change24h >= 0 ? C.green : C.red }}>{info.change24h != null ? `${info.change24h.toFixed(2)}%` : '—'}</span>
