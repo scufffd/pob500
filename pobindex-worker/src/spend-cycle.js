@@ -23,6 +23,7 @@ const { logEvent, formatSol } = require('./utils');
 const { swapSolToToken } = require('./distribute');
 const { resolveStakingConfig, depositCreatorFeesToPool } = require('./stake-distribute');
 const { loadCurrentBasket } = require('./basket');
+const { runPersonalizedSpend } = require('./personalized-distribute');
 
 const MIN_SPEND_LAMPORTS = Math.round(
   parseFloat(process.env.MIN_DISTRIBUTE_SOL || '0.02') * 1e9,
@@ -290,7 +291,56 @@ async function runSpendCycle({ treasury, dryRun = false, basket: overrideBasket 
     };
   }
 
-  const budgets = allocateBudgets(onlyRegistered, distLamports);
+  // ── Personalized rewards (off-pool) ──
+  // Each wallet that opted in to a custom reward token claims its pro-rata
+  // slice of `distLamports` BEFORE the auto-basket runs. Their slice is
+  // swapped + airdropped directly to their wallet, then the residual stays
+  // in `distLamports` for the regular basket flow that follows.
+  let personalizedResult = {
+    personalizedLamports: 0,
+    residualLamports: distLamports,
+    payouts: [],
+    skipped: [],
+  };
+  if (String(process.env.PERSONAL_REWARDS_ENABLED || '1') === '1') {
+    try {
+      personalizedResult = await runPersonalizedSpend({
+        treasury,
+        distributableLamports: distLamports,
+        dryRun,
+      });
+    } catch (e) {
+      logEvent('warn', 'Personalized spend failed — falling back to full auto-basket', {
+        error: e.message || String(e),
+      });
+      personalizedResult = {
+        personalizedLamports: 0,
+        residualLamports: distLamports,
+        payouts: [],
+        skipped: [{ reason: 'cycle_error', error: e.message || String(e) }],
+      };
+    }
+  }
+  const remainingLamports = personalizedResult.residualLamports;
+  if (remainingLamports < MIN_SPEND_LAMPORTS) {
+    logEvent('info', 'Spend cycle: personalized layer consumed entire budget', {
+      personalizedSol: personalizedResult.personalizedLamports / 1e9,
+      residualSol: remainingLamports / 1e9,
+    });
+    return {
+      completedAt: new Date().toISOString(),
+      basketVersion: basket.version,
+      treasuryBalanceSol: bal / 1e9,
+      distributableSol: distLamports / 1e9,
+      personalized: personalizedResult,
+      budgets: [],
+      swaps: [],
+      deposit: { deposited: [], skipped: [] },
+      dryRun,
+    };
+  }
+
+  const budgets = allocateBudgets(onlyRegistered, remainingLamports);
   if (budgets.length === 0) {
     return {
       skipped: 'all_entries_below_min_after_allocation',
@@ -368,6 +418,7 @@ async function runSpendCycle({ treasury, dryRun = false, basket: overrideBasket 
     basketVersion: basket.version,
     treasuryBalanceSol: bal / 1e9,
     distributableSol: distLamports / 1e9,
+    personalized: personalizedResult,
     budgets,
     swaps,
     deposit: depositResult,
