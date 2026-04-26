@@ -65,6 +65,9 @@ const {
   SOL_MINT,
 } = require('./reward-prefs');
 const { validateRewardMint } = require('./token-validator');
+const { stakeForCompound, fetchPoolRewardMints } = require('./stake-compound');
+
+const STAKE_MINT_BASE58 = (process.env.POB_STAKE_MINT || '').trim();
 
 const PAYOUT_LEDGER = process.env.PERSONALIZED_PAYOUT_LEDGER
   || path.join(__dirname, '..', 'data', 'personalized-payouts.jsonl');
@@ -275,6 +278,9 @@ async function runPersonalizedSpend({ treasury, distributableLamports, dryRun = 
     }
 
     const subFloor = Math.max(1, Math.floor(MIN_PERSONAL_SLICE_LAMPORTS / 2));
+    const walletCompound = pref.compound && pref.compound.enabled
+      ? { enabled: true, lockDays: Number(pref.compound.lockDays) || 0 }
+      : { enabled: false, lockDays: 0 };
     for (const a of allocs) {
       if (a.lamports < subFloor) {
         skipped.push({
@@ -285,12 +291,19 @@ async function runPersonalizedSpend({ treasury, distributableLamports, dryRun = 
         });
         continue;
       }
+      // Compound only applies to the stake-mint allocation. Other allocations
+      // are still airdropped normally to the user's wallet.
+      const isStakeMintAlloc = STAKE_MINT_BASE58 && a.mint === STAKE_MINT_BASE58;
+      const compound = isStakeMintAlloc && walletCompound.enabled
+        ? { enabled: true, lockDays: walletCompound.lockDays }
+        : null;
       planEntries.push({
         wallet: walletStr,
         mint: a.mint,
         lamports: a.lamports,
         symbol: a.symbol || null,
         decimals: a.decimals != null ? a.decimals : null,
+        compound,
       });
       if (a.mint !== SOL_MINT && !allocMetaByMint.has(a.mint)) {
         allocMetaByMint.set(a.mint, {
@@ -533,6 +546,7 @@ async function runPersonalizedSpend({ treasury, distributableLamports, dryRun = 
         lamports: e.lamports,
         amountRaw: share,
         decimals,
+        compound: e.compound || null,
       };
     });
     splDistributions.set(mint, distribution);
@@ -596,14 +610,87 @@ async function runPersonalizedSpend({ treasury, distributableLamports, dryRun = 
 
   // 3b) SPL transfers — per mint, one ATA-create-idempotent + transferChecked
   // per recipient, greedy-packed.
+  //
+  // Special case: when the mint is the POB500 stake mint AND a recipient has
+  // compound enabled, we route them to `stake_for` instead of an airdrop. The
+  // compound path runs sequentially (one staker at a time) because each
+  // stake_for needs a fresh nonce + checkpoint primes; airdrop recipients
+  // still pack into batched transferChecked txs.
+  let cachedRewardMints = null;
   for (const [mint, distribution] of splDistributions) {
     const meta = allocMetaByMint.get(mint) || {};
     const tokenProgram = meta.tokenProgram;
     if (!tokenProgram) continue;
     const mintPk = new PublicKey(mint);
     const treasuryAta = getAssociatedTokenAddressSync(mintPk, treasury.publicKey, false, tokenProgram);
-    const groups = distribution
-      .filter((d) => d.amountRaw > 0n)
+
+    const isStakeMint = STAKE_MINT_BASE58 && mint === STAKE_MINT_BASE58;
+    const compoundRecipients = isStakeMint
+      ? distribution.filter((d) => d.amountRaw > 0n && d.compound && d.compound.enabled)
+      : [];
+    const airdropRecipients = isStakeMint
+      ? distribution.filter((d) => d.amountRaw > 0n && (!d.compound || !d.compound.enabled))
+      : distribution.filter((d) => d.amountRaw > 0n);
+
+    // Compound path: stake_for + prime_checkpoint, one beneficiary at a time.
+    if (compoundRecipients.length > 0) {
+      if (!cachedRewardMints) {
+        try {
+          cachedRewardMints = await fetchPoolRewardMints(treasury);
+        } catch (e) {
+          // If we can't fetch reward mints, fall back compound recipients to
+          // airdrop so they still get paid. They keep their preference, just
+          // miss compound this cycle.
+          logEvent('warn', 'Compound: failed to fetch reward mints — airdrop fallback', {
+            error: e.message,
+            recipients: compoundRecipients.length,
+          });
+          airdropRecipients.push(...compoundRecipients);
+          compoundRecipients.length = 0;
+        }
+      }
+      for (const d of compoundRecipients) {
+        try {
+          const result = await stakeForCompound({
+            treasury,
+            beneficiary: d.wallet,
+            amountRaw: d.amountRaw,
+            lockDays: d.compound.lockDays,
+            rewardMints: cachedRewardMints,
+          });
+          const postedAt = new Date().toISOString();
+          const row = {
+            cycleStartedAt,
+            wallet: d.wallet,
+            mint,
+            symbol: meta.symbol || null,
+            decimals: d.decimals,
+            lamportsSpent: d.lamports,
+            tokenAmountRaw: d.amountRaw.toString(),
+            tokenAmountUi: Number(d.amountRaw) / Math.pow(10, d.decimals),
+            signature: result.signatures[result.signatures.length - 1],
+            additionalSignatures: result.signatures.slice(0, -1),
+            position: result.position,
+            nonce: result.nonce,
+            lockDays: d.compound.lockDays,
+            kind: 'compound',
+            postedAt,
+          };
+          appendLedger([row]);
+          payouts.push(row);
+          personalizedLamports += d.lamports;
+        } catch (e) {
+          logEvent('warn', 'Compound stake_for failed — falling back to airdrop', {
+            wallet: d.wallet,
+            amountRaw: d.amountRaw.toString(),
+            error: e.message,
+          });
+          airdropRecipients.push(d);
+        }
+      }
+    }
+
+    const groups = airdropRecipients
       .map((d) => {
         const recipientPk = new PublicKey(d.wallet);
         const recipientAta = getAssociatedTokenAddressSync(mintPk, recipientPk, false, tokenProgram);

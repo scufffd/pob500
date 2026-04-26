@@ -21,6 +21,7 @@ const {
   savePreference,
   MAX_ALLOCATIONS,
   MESSAGE_PREFIX,
+  COMPOUND_LOCK_TIERS,
 } = require('./reward-prefs');
 const { readPayoutLedger } = require('./personalized-distribute');
 
@@ -81,10 +82,17 @@ app.post('/api/reward-pref/nonce', (req, res) => {
     const issuedAt = Date.now();
     const allocations = Array.isArray(req.body?.allocations) ? req.body.allocations : [];
     const mode = req.body?.mode === 'custom' ? 'custom' : 'auto';
+    const compound = req.body?.compound && typeof req.body.compound === 'object'
+      ? {
+        enabled: req.body.compound.enabled === true,
+        lockDays: Number(req.body.compound.lockDays) || 0,
+      }
+      : { enabled: false, lockDays: 0 };
     const message = buildSignableMessage({
       wallet,
       mode,
       allocations: allocations.map((a) => ({ mint: a.mint, pct: Number(a.pct) })),
+      compound,
       nonce,
       issuedAt,
     });
@@ -95,6 +103,7 @@ app.post('/api/reward-pref/nonce', (req, res) => {
       message,
       messagePrefix: MESSAGE_PREFIX,
       maxAllocations: MAX_ALLOCATIONS,
+      compoundLockTiers: COMPOUND_LOCK_TIERS,
     });
   } catch (e) {
     res.status(400).json({ error: e.code || 'nonce_failed', message: e.message });
@@ -117,10 +126,17 @@ app.post('/api/reward-pref/validate', async (req, res) => {
 
 app.post('/api/reward-pref/save', async (req, res) => {
   try {
+    const compound = req.body?.compound && typeof req.body.compound === 'object'
+      ? {
+        enabled: req.body.compound.enabled === true,
+        lockDays: Number(req.body.compound.lockDays) || 0,
+      }
+      : { enabled: false, lockDays: 0 };
     const result = await savePreference({
       wallet: String(req.body?.wallet || '').trim(),
       mode: req.body?.mode === 'custom' ? 'custom' : 'auto',
       allocations: Array.isArray(req.body?.allocations) ? req.body.allocations : [],
+      compound,
       message: String(req.body?.message || ''),
       signature: String(req.body?.signature || ''),
       nonce: String(req.body?.nonce || ''),

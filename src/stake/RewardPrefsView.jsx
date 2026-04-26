@@ -24,6 +24,14 @@ const glass = (extra = {}) => ({
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STAKE_MINT = import.meta.env.VITE_POB_STAKE_MINT || '';
+const COMPOUND_LOCK_TIERS = [
+  { days: 1, multiplier: '1.00×' },
+  { days: 3, multiplier: '1.25×' },
+  { days: 7, multiplier: '1.50×' },
+  { days: 14, multiplier: '2.00×' },
+  { days: 21, multiplier: '2.50×' },
+  { days: 30, multiplier: '3.00×' },
+];
 
 function apiBase() {
   return import.meta.env.VITE_POBINDEX_API_BASE || '';
@@ -88,6 +96,7 @@ export default function RewardPrefsView() {
 
   const [mode, setMode] = useState('auto');
   const [allocations, setAllocations] = useState([makeAlloc()]);
+  const [compound, setCompound] = useState({ enabled: false, lockDays: 7 });
   const [pref, setPref] = useState(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState(null);
@@ -108,6 +117,14 @@ export default function RewardPrefsView() {
         if (cancelled) return;
         setPref(next);
         setMode(next.mode || 'auto');
+        if (next.compound && typeof next.compound === 'object') {
+          setCompound({
+            enabled: !!next.compound.enabled,
+            lockDays: Number(next.compound.lockDays) || 7,
+          });
+        } else {
+          setCompound({ enabled: false, lockDays: 7 });
+        }
         if (next.mode === 'custom' && Array.isArray(next.allocations) && next.allocations.length > 0) {
           setAllocations(next.allocations.map((a) => ({
             id: `${a.mint}_${Math.random().toString(36).slice(2, 8)}`,
@@ -119,6 +136,7 @@ export default function RewardPrefsView() {
               name: a.name,
               decimals: a.decimals,
               tokenProgram: a.tokenProgram,
+              isStakeMint: STAKE_MINT && a.mint === STAKE_MINT,
             },
             error: null,
           })));
@@ -138,12 +156,18 @@ export default function RewardPrefsView() {
     [allocations],
   );
 
+  const hasStakeAlloc = useMemo(
+    () => STAKE_MINT && allocations.some((a) => a.mint === STAKE_MINT),
+    [allocations],
+  );
+
   const customReady = useMemo(() => (
     mode === 'custom'
     && allocations.length > 0
     && allocations.every((a) => a.state === 'ok' && a.mint)
     && totalPct === 100
-  ), [mode, allocations, totalPct]);
+    && (!compound.enabled || hasStakeAlloc)
+  ), [mode, allocations, totalPct, compound.enabled, hasStakeAlloc]);
 
   const setAllocAt = useCallback((id, patch) => {
     setAllocations((rows) => rows.map((a) => (a.id === id ? { ...a, ...patch } : a)));
@@ -221,12 +245,16 @@ export default function RewardPrefsView() {
     setBusy(true);
     setMsg(null);
     try {
+      const compoundPayload = (mode === 'custom' && compound.enabled && hasStakeAlloc)
+        ? { enabled: true, lockDays: Number(compound.lockDays) }
+        : { enabled: false, lockDays: 0 };
       const payload = {
         wallet,
         mode,
         allocations: mode === 'custom'
           ? allocations.map((a) => ({ mint: a.mint, pct: Number(a.pct) }))
           : [],
+        compound: compoundPayload,
       };
       const nonceRes = await api('/api/reward-pref/nonce', {
         method: 'POST',
@@ -243,6 +271,7 @@ export default function RewardPrefsView() {
           wallet,
           mode,
           allocations: payload.allocations,
+          compound: compoundPayload,
           message: nonceRes.message,
           signature,
           nonce: nonceRes.nonce,
@@ -253,7 +282,9 @@ export default function RewardPrefsView() {
       setMsg({
         kind: 'ok',
         text: mode === 'custom'
-          ? 'Saved. Future cycles will route your share into your chosen tokens.'
+          ? (compoundPayload.enabled
+            ? `Saved. Faith will auto-stake your POB500 share for ${compoundPayload.lockDays} day(s) every cycle.`
+            : 'Saved. Future cycles will route your share into your chosen tokens.')
           : 'Reset to auto-basket. You will receive the standard reward distribution.',
       });
       setRefreshKey((k) => k + 1);
@@ -406,6 +437,84 @@ export default function RewardPrefsView() {
                 >split evenly</button>
               </div>
             </div>
+          </div>
+        )}
+
+        {mode === 'custom' && hasStakeAlloc && (
+          <div style={{
+            marginTop: 14,
+            padding: 14,
+            borderRadius: 12,
+            background: compound.enabled ? 'rgba(191,90,242,.08)' : 'rgba(255,255,255,.025)',
+            border: compound.enabled ? '1px solid rgba(191,90,242,.35)' : '1px solid rgba(255,255,255,.08)',
+            display: 'flex',
+            flexDirection: 'column',
+            gap: 10,
+          }}>
+            <label style={{ display: 'flex', gap: 10, alignItems: 'flex-start', cursor: connected ? 'pointer' : 'not-allowed' }}>
+              <input
+                type="checkbox"
+                checked={compound.enabled}
+                disabled={!connected}
+                onChange={(e) => setCompound((c) => ({ ...c, enabled: e.target.checked }))}
+                style={{ marginTop: 4, accentColor: C.violet, cursor: 'inherit' }}
+              />
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 800, color: compound.enabled ? C.violet : '#fff' }}>
+                  Auto-stake POB500 rewards
+                </div>
+                <div className="mono" style={{ marginTop: 4, fontSize: 11, color: 'rgba(255,255,255,.55)', lineHeight: 1.55 }}>
+                  Each cycle Faith stakes your POB500 share directly via <code>stake_for</code> with the lock tier you pick below — no extra approval needed.
+                  Position owner is your wallet, so you keep full custody and can claim or unstake any time from the Stake tab.
+                  Other allocations (basket tokens, SOL) still airdrop to your wallet as normal.
+                </div>
+              </div>
+            </label>
+
+            {compound.enabled && (
+              <div>
+                <div className="mono" style={{ fontSize: 10, fontWeight: 700, letterSpacing: '.1em', color: 'rgba(255,255,255,.4)', textTransform: 'uppercase', marginBottom: 8 }}>
+                  Lock tier for compound positions
+                </div>
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 6 }}>
+                  {COMPOUND_LOCK_TIERS.map((tier) => {
+                    const on = tier.days === compound.lockDays;
+                    return (
+                      <button
+                        key={tier.days}
+                        type="button"
+                        disabled={!connected}
+                        onClick={() => setCompound((c) => ({ ...c, lockDays: tier.days }))}
+                        style={{
+                          padding: '10px 0',
+                          borderRadius: 8,
+                          cursor: connected ? 'pointer' : 'not-allowed',
+                          background: on ? 'rgba(191,90,242,.14)' : 'rgba(255,255,255,.04)',
+                          border: on ? '1px solid rgba(191,90,242,.55)' : '1px solid rgba(255,255,255,.08)',
+                          color: on ? C.violet : 'rgba(255,255,255,.55)',
+                          fontFamily: 'JetBrains Mono, monospace',
+                          fontSize: 11,
+                          fontWeight: 800,
+                          boxShadow: on ? '0 0 14px rgba(191,90,242,.22)' : 'none',
+                        }}
+                      >
+                        <div>{tier.days}d</div>
+                        <div style={{ fontSize: 9.5, marginTop: 2, opacity: .8 }}>{tier.multiplier}</div>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="mono" style={{ marginTop: 8, fontSize: 10.5, color: 'rgba(255,255,255,.42)' }}>
+                  Each cycle creates a fresh on-chain position at this tier. Compound forever, or unstake whenever the lock expires.
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {mode === 'custom' && compound.enabled && !hasStakeAlloc && (
+          <div className="mono" style={{ marginTop: 14, padding: 10, borderRadius: 10, background: 'rgba(255,171,74,.08)', border: '1px solid rgba(255,171,74,.25)', fontSize: 11.5, color: '#ffe1b8' }}>
+            Auto-stake is on, but no POB500 allocation is set. Click <b>+ POB500 (compound)</b> above, validate, then save — or untick auto-stake.
           </div>
         )}
 

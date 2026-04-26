@@ -48,6 +48,7 @@ const PREFS_FILE = process.env.REWARD_PREFS_FILE
 const NONCE_TTL_MS = parseInt(process.env.REWARD_PREF_NONCE_TTL_MS || (5 * 60_000), 10);
 const MAX_ALLOCATIONS = 3;
 const MESSAGE_PREFIX = 'POB500_REWARD_PREF_V1';
+const COMPOUND_LOCK_TIERS = [1, 3, 7, 14, 21, 30];
 
 // In-memory nonce store. We persist nothing here — restarting the worker
 // just means anyone in the middle of signing has to refresh, which is fine.
@@ -109,20 +110,42 @@ function consumeNonce(wallet, nonce) {
   return Date.now() - ts <= NONCE_TTL_MS;
 }
 
+function normalizeCompound(input) {
+  if (!input || typeof input !== 'object') {
+    return { enabled: false, lockDays: 0 };
+  }
+  const enabled = input.enabled === true;
+  if (!enabled) return { enabled: false, lockDays: 0 };
+  const lockDays = Number(input.lockDays);
+  if (!Number.isInteger(lockDays) || !COMPOUND_LOCK_TIERS.includes(lockDays)) {
+    const e = new Error(`compound.lockDays must be one of: ${COMPOUND_LOCK_TIERS.join(', ')}`);
+    e.code = 'compound_invalid_lock_days';
+    throw e;
+  }
+  return { enabled: true, lockDays };
+}
+
 /**
  * Canonical message a wallet must sign to save preferences. Keep this
  * deterministic — any change here means we ship a v2 prefix and ignore old
  * signatures rather than silently invalidating saves.
+ *
+ * Compound is part of the signed payload: a malicious server can't unilaterally
+ * stake user rewards without the wallet authorising the chosen lock tier.
  */
-function buildSignableMessage({ wallet, mode, allocations, nonce, issuedAt }) {
+function buildSignableMessage({ wallet, mode, allocations, compound, nonce, issuedAt }) {
   const allocs = (allocations || [])
     .map((a) => `${a.mint}:${a.pct}`)
     .join(',');
+  const c = compound && compound.enabled
+    ? `enabled:${compound.lockDays}`
+    : 'disabled';
   return [
     MESSAGE_PREFIX,
     `wallet:${wallet}`,
     `mode:${mode}`,
     `allocations:${allocs}`,
+    `compound:${c}`,
     `nonce:${nonce}`,
     `issuedAt:${issuedAt}`,
   ].join('|');
@@ -195,8 +218,17 @@ function getPreference(wallet) {
   const doc = loadDoc();
   const record = doc.prefs[wallet];
   if (!record) {
-    return { wallet, mode: 'auto', allocations: [], updatedAt: null, lastFailure: null };
+    return {
+      wallet,
+      mode: 'auto',
+      allocations: [],
+      compound: { enabled: false, lockDays: 0 },
+      updatedAt: null,
+      lastFailure: null,
+    };
   }
+  // Backfill compound for older records that pre-date the field.
+  if (!record.compound) record.compound = { enabled: false, lockDays: 0 };
   return record;
 }
 
@@ -209,6 +241,7 @@ async function savePreference({
   wallet,
   mode,
   allocations,
+  compound,
   message,
   signature,
   nonce,
@@ -242,11 +275,32 @@ async function savePreference({
   }
 
   const cleanedAllocs = mode === 'custom' ? normalizeAllocations(allocations) : [];
+  const cleanedCompound = normalizeCompound(compound);
+  const stakeMintEnv = (process.env.POB_STAKE_MINT || '').trim();
+  if (cleanedCompound.enabled) {
+    if (mode !== 'custom') {
+      const e = new Error('Compound requires custom mode');
+      e.code = 'compound_requires_custom';
+      throw e;
+    }
+    if (!stakeMintEnv) {
+      const e = new Error('POB_STAKE_MINT not configured on server');
+      e.code = 'stake_mint_unconfigured';
+      throw e;
+    }
+    const hasStakeAlloc = cleanedAllocs.some((a) => a.mint === stakeMintEnv);
+    if (!hasStakeAlloc) {
+      const e = new Error('Compound requires the stake mint to be among your allocations');
+      e.code = 'compound_requires_stake_alloc';
+      throw e;
+    }
+  }
 
   const expectedMessage = buildSignableMessage({
     wallet,
     mode,
     allocations: cleanedAllocs,
+    compound: cleanedCompound,
     nonce,
     issuedAt: issuedAtMs,
   });
@@ -285,6 +339,7 @@ async function savePreference({
   const record = {
     mode,
     allocations: enrichedAllocs,
+    compound: cleanedCompound,
     updatedAt: new Date().toISOString(),
     issuedAt: issuedAtMs,
     signature,
@@ -332,6 +387,7 @@ module.exports = {
   PREFS_FILE,
   MAX_ALLOCATIONS,
   MESSAGE_PREFIX,
+  COMPOUND_LOCK_TIERS,
   newNonce,
   buildSignableMessage,
   getPreference,
