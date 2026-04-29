@@ -24,6 +24,7 @@ const {
 
 const config = require('./config');
 const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 
 function loadIdl(programId) {
   const idlPath = path.join(__dirname, '..', '..', 'staking-sdk', 'src', 'idl.json');
@@ -33,7 +34,7 @@ function loadIdl(programId) {
 }
 
 async function detectTokenProgram(connection, mint) {
-  const info = await connection.getAccountInfo(mint);
+  const info = await getAccountInfoCached(connection, mint);
   if (!info) throw new Error(`Mint ${mint.toBase58()} not found on stake cluster`);
   if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
   if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;

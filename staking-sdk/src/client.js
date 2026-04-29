@@ -183,6 +183,33 @@ export class StakeClient {
     }
   }
 
+  /**
+   * Load every (position × rewardMint) checkpoint with batched RPC
+   * (`getMultipleAccounts` via Anchor) instead of one request per pair.
+   *
+   * @returns {Record<string, object>} keys `positionB58|rewardMintPdaB58`
+   */
+  async fetchCheckpointMatrix(positions, rewardMints) {
+    if (!positions?.length || !rewardMints?.length) return {};
+    const addresses = [];
+    const keys = [];
+    for (const pos of positions) {
+      for (const rm of rewardMints) {
+        addresses.push(this.checkpointPda(pos.publicKey, rm.publicKey));
+        keys.push(`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`);
+      }
+    }
+    const rows = await this.program.account.rewardCheckpoint.fetchMultiple(
+      addresses,
+      'confirmed',
+    );
+    const out = {};
+    for (let i = 0; i < keys.length; i++) {
+      if (rows[i]) out[keys[i]] = rows[i];
+    }
+    return out;
+  }
+
   // --- ix builders -------------------------------------------------------
 
   async initializePoolIx(authority) {

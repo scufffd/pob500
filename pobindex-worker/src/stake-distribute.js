@@ -21,6 +21,8 @@ const {
 const BN = require('bn.js');
 
 const config = require('./config');
+const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 
 const SEEDS = {
   pool: Buffer.from('pool'),
@@ -42,7 +44,7 @@ function findRewardMintPda(programId, pool, mint) {
 }
 
 async function detectTokenProgram(connection, mint) {
-  const info = await connection.getAccountInfo(mint);
+  const info = await getAccountInfoCached(connection, mint);
   if (!info) throw new Error(`Mint ${mint.toBase58()} not found`);
   if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
   if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
@@ -201,25 +203,108 @@ async function fetchPoolStateForDashboard() {
       stakeMint: cfg.stakeMint.toBase58(),
       pool: cfg.pool.toBase58(),
       initialized: false,
+      activePositions: 0,
+      uniqueStakers: 0,
+      lockDistributionByAmount: [],
+      lockDistributionByCount: [],
+      approxPctSupplyStaked: null,
+      avgLockDaysAmountWeighted: null,
+      snapshotAt: new Date().toISOString(),
     };
   }
 
   let stakeDecimals = 9;
+  let mintSupplyRaw = '0';
   try {
     const { getMint } = require('@solana/spl-token');
-    const mintInfo = await getMint(connection, cfg.stakeMint);
+    const tokenProgram = await detectTokenProgram(connection, cfg.stakeMint);
+    const mintInfo = await getMint(connection, cfg.stakeMint, 'confirmed', tokenProgram);
     stakeDecimals = mintInfo.decimals;
+    mintSupplyRaw = mintInfo.supply?.toString?.() || String(mintInfo.supply || '0');
   } catch (_) { /* keep default */ }
+
+  const totalStakedStr = pool.totalStaked?.toString?.() || '0';
+  const totalStakedBn = BigInt(totalStakedStr);
+  const supplyBn = BigInt(mintSupplyRaw);
+  const approxPctSupplyStaked = supplyBn > 0n
+    ? Math.min(100, Number((totalStakedBn * 10000n) / supplyBn) / 100)
+    : null;
+
+  /** Open positions for this pool (same memcmp filter as stake-push / UI). */
+  let activePositions = 0;
+  let uniqueStakers = 0;
+  const byLockAmount = new Map();
+  const byLockCount = new Map();
+  let sumAmtForAvg = 0n;
+  let sumAmtTimesLock = 0n;
+  try {
+    const positions = await program.account.stakePosition.all([
+      { memcmp: { offset: 9, bytes: cfg.pool.toBase58() } },
+    ]);
+    const active = positions
+      .map((a) => ({ publicKey: a.publicKey, account: a.account }))
+      .filter((p) => !p.account.closed);
+    activePositions = active.length;
+    const owners = new Set(active.map((p) => p.account.owner.toBase58()));
+    uniqueStakers = owners.size;
+    for (const p of active) {
+      const amt = BigInt(String(p.account.amount ?? 0));
+      const ld = Number(p.account.lockDays ?? 0);
+      byLockAmount.set(ld, (byLockAmount.get(ld) || 0n) + amt);
+      byLockCount.set(ld, (byLockCount.get(ld) || 0) + 1);
+      sumAmtForAvg += amt;
+      sumAmtTimesLock += amt * BigInt(ld);
+    }
+  } catch (e) {
+    logEvent('warn', 'fetchPoolStateForDashboard: position scan failed', { error: e.message });
+  }
+
+  const toPctRowsAmount = () => {
+    if (totalStakedBn <= 0n) return [];
+    return [...byLockAmount.entries()]
+      .map(([lockDays, amt]) => ({
+        lockDays,
+        pct: Number((amt * 10000n) / totalStakedBn) / 100,
+      }))
+      .filter((r) => r.pct > 0.005)
+      .sort((a, b) => b.lockDays - a.lockDays);
+  };
+
+  const toPctRowsCount = () => {
+    const totalCount = [...byLockCount.values()].reduce((s, n) => s + n, 0);
+    if (totalCount <= 0) return [];
+    return [...byLockCount.entries()]
+      .map(([lockDays, count]) => ({
+        lockDays,
+        pct: Math.round((count * 10000) / totalCount) / 100,
+      }))
+      .filter((r) => r.pct > 0.005)
+      .sort((a, b) => b.lockDays - a.lockDays);
+  };
+
+  const lockDistributionByAmount = toPctRowsAmount();
+  const lockDistributionByCount = toPctRowsCount();
+  const avgLockDaysAmountWeighted = sumAmtForAvg > 0n
+    ? Number(sumAmtTimesLock * 1000n / sumAmtForAvg) / 1000
+    : null;
 
   return {
     programId: cfg.programId.toBase58(),
     stakeMint: cfg.stakeMint.toBase58(),
     pool: cfg.pool.toBase58(),
     initialized: true,
-    totalStaked: pool.totalStaked?.toString?.() || '0',
+    totalStaked: totalStakedStr,
     totalEffective: pool.totalEffective?.toString?.() || '0',
     rewardMintCount: typeof pool.rewardMintCount === 'number' ? pool.rewardMintCount : (pool.rewardMintCount?.toNumber?.() ?? null),
     stakeDecimals,
+    mintSupplyRaw,
+    approxPctSupplyStaked,
+    activePositions,
+    uniqueStakers,
+    lockDistributionByAmount,
+    lockDistributionByCount,
+    avgLockDaysAmountWeighted,
+    snapshotAt: new Date().toISOString(),
   };
 }
 

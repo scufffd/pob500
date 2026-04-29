@@ -31,6 +31,7 @@ const {
 
 const config = require('./config');
 const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 const { fetchPrintrSolanaCandidates } = require('./printr');
 const { selectTopCandidates } = require('./scoring');
 const { ensureRewardMintRegistered } = require('./ensure-reward-mint');
@@ -95,7 +96,7 @@ function minutesUntilRefresh(basket, intervalMin = basketRefreshIntervalMin()) {
 
 async function detectTokenProgram(connection, mint) {
   try {
-    const info = await connection.getAccountInfo(mint);
+    const info = await getAccountInfoCached(connection, mint);
     if (!info) return null;
     if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return 'Token-2022';
     if (info.owner.equals(TOKEN_PROGRAM_ID)) return 'Legacy SPL';

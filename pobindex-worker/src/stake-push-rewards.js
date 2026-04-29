@@ -22,7 +22,7 @@ const {
   ASSOCIATED_TOKEN_PROGRAM_ID,
   getAssociatedTokenAddressSync,
   createAssociatedTokenAccountIdempotentInstruction,
-  getMint,
+  unpackMint,
   getTransferFeeConfig,
 } = require('@solana/spl-token');
 
@@ -50,22 +50,39 @@ function loadIdl(programId) {
   return { ...idl, address: programId.toBase58() };
 }
 
-async function detectTokenProgram(connection, mint) {
-  const info = await connection.getAccountInfo(mint);
-  if (!info) throw new Error(`Mint ${mint.toBase58()} not found`);
-  if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
-  if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;
-  throw new Error(`Mint ${mint.toBase58()} is not SPL / Token-2022`);
-}
-
-async function mintHasTransferFee(connection, mint, tokenProgram) {
-  if (!tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) return false;
-  try {
-    const m = await getMint(connection, mint, 'confirmed', TOKEN_2022_PROGRAM_ID);
-    return !!getTransferFeeConfig(m);
-  } catch {
-    return false;
+/**
+ * Batch-load mint accounts once per push cycle (instead of 2×N getAccountInfo).
+ * @returns {Map<string, { tokenProgram: import('@solana/web3.js').PublicKey, hasTransferFee: boolean }>}
+ */
+async function loadRewardMintMeta(connection, rewardMints) {
+  const mints = rewardMints.map((rm) => rm.account.mint);
+  const infos = await connection.getMultipleAccountsInfo(mints, 'confirmed');
+  const meta = new Map();
+  for (let i = 0; i < mints.length; i++) {
+    const m = mints[i];
+    const key = m.toBase58();
+    const info = infos[i];
+    if (!info) {
+      throw new Error(`Mint ${key} not found`);
+    }
+    let tokenProgram = null;
+    if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) tokenProgram = TOKEN_2022_PROGRAM_ID;
+    else if (info.owner.equals(TOKEN_PROGRAM_ID)) tokenProgram = TOKEN_PROGRAM_ID;
+    if (!tokenProgram) {
+      throw new Error(`Mint ${key} is not SPL / Token-2022`);
+    }
+    let hasTransferFee = false;
+    if (tokenProgram.equals(TOKEN_2022_PROGRAM_ID)) {
+      try {
+        const unpacked = unpackMint(m, info, TOKEN_2022_PROGRAM_ID);
+        hasTransferFee = !!getTransferFeeConfig(unpacked);
+      } catch {
+        hasTransferFee = false;
+      }
+    }
+    meta.set(key, { tokenProgram, hasTransferFee });
   }
+  return meta;
 }
 
 function findCheckpointPda(programId, position, rewardMintPda) {
@@ -188,13 +205,25 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
   // Per-mint metadata: token program + whether the mint has a transfer-fee
   // extension (which forces the destination ATA to grow from ~165 → ~185 bytes
   // on first receive, requiring rent pre-funding).
-  const mintMeta = new Map();
-  for (const rm of rewardMints) {
-    const m = rm.account.mint;
-    const key = m.toBase58();
-    const tokenProgram = await detectTokenProgram(connection, m);
-    const hasFee = await mintHasTransferFee(connection, m, tokenProgram);
-    mintMeta.set(key, { tokenProgram, hasTransferFee: hasFee });
+  const mintMeta = await loadRewardMintMeta(connection, rewardMints);
+
+  // One batched getMultipleAccounts per ~99 checkpoints instead of N×M RPCs.
+  const checkpointAddrs = [];
+  const checkpointKeys = [];
+  for (const pos of active) {
+    for (const rm of rewardMints) {
+      checkpointAddrs.push(findCheckpointPda(cfg.programId, pos.publicKey, rm.publicKey));
+      checkpointKeys.push(`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`);
+    }
+  }
+  let ckDecoded = [];
+  if (checkpointAddrs.length > 0) {
+    ckDecoded = await program.account.rewardCheckpoint.fetchMultiple(checkpointAddrs, 'confirmed');
+  }
+  const ckByPair = new Map();
+  for (let i = 0; i < checkpointKeys.length; i++) {
+    const row = ckDecoded[i];
+    if (row) ckByPair.set(checkpointKeys[i], row);
   }
 
   const work = [];
@@ -206,13 +235,8 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
       const meta = mintMeta.get(rewardMintPk.toBase58());
       const tokenProgram = meta.tokenProgram;
       const userAta = getAssociatedTokenAddressSync(rewardMintPk, owner, false, tokenProgram);
-      const ckPk = findCheckpointPda(cfg.programId, pos.publicKey, rm.publicKey);
-      let ck = null;
-      try {
-        ck = await program.account.rewardCheckpoint.fetchNullable(ckPk);
-      } catch {
-        ck = null;
-      }
+      const pairKey = `${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`;
+      const ck = ckByPair.get(pairKey) || null;
       // Missing checkpoint: stake joined after this mint was registered. The
       // on-chain `claim_push` would init_if_needed it (paid by authority) but
       // the resulting payout would be 0 (baseline-safe). Instead we prime it

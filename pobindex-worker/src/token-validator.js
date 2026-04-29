@@ -14,10 +14,12 @@ const { PublicKey } = require('@solana/web3.js');
 const {
   TOKEN_PROGRAM_ID,
   TOKEN_2022_PROGRAM_ID,
+  unpackMint,
 } = require('@solana/spl-token');
 
 const config = require('./config');
 const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 
 const fetch = (...args) => import('node-fetch').then(({ default: f }) => f(...args));
 
@@ -47,7 +49,7 @@ function isValidPubkey(value) {
 }
 
 async function detectTokenProgram(mint) {
-  const info = await config.connection.getAccountInfo(mint);
+  const info = await getAccountInfoCached(config.connection, mint);
   if (!info) throw new Error('mint_not_found');
   if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return { program: TOKEN_2022_PROGRAM_ID, label: 'Token-2022' };
   if (info.owner.equals(TOKEN_PROGRAM_ID)) return { program: TOKEN_PROGRAM_ID, label: 'Token' };
@@ -56,13 +58,16 @@ async function detectTokenProgram(mint) {
 
 async function fetchMintInfo(mintBase58) {
   const mintPk = new PublicKey(mintBase58);
-  const acct = await config.connection.getParsedAccountInfo(mintPk);
-  if (!acct?.value) throw new Error('mint_not_found');
-  const parsed = acct.value.data?.parsed?.info;
-  if (!parsed) throw new Error('not_a_token_mint');
-  const decimals = Number(parsed.decimals ?? 9);
-  const supplyRaw = parsed.supply ? Number(parsed.supply) : 0;
-  const owner = String(acct.value.owner?.toBase58?.() || '');
+  const info = await getAccountInfoCached(config.connection, mintPk);
+  if (!info) throw new Error('mint_not_found');
+  let program = null;
+  if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) program = TOKEN_2022_PROGRAM_ID;
+  else if (info.owner.equals(TOKEN_PROGRAM_ID)) program = TOKEN_PROGRAM_ID;
+  if (!program) throw new Error('not_a_token_mint');
+  const unpacked = unpackMint(mintPk, info, program);
+  const decimals = Number(unpacked.decimals ?? 9);
+  const supplyRaw = Number(unpacked.supply ?? 0);
+  const owner = program.toBase58();
   return { decimals, supplyRaw, owner, mintPk };
 }
 

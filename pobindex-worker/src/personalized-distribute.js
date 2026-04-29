@@ -57,6 +57,7 @@ const {
 
 const config = require('./config');
 const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 const { swapSolToToken } = require('./distribute');
 const { resolveStakingConfig } = require('./stake-distribute');
 const {
@@ -93,7 +94,7 @@ function appendLedger(rows) {
 }
 
 async function detectTokenProgram(mintPk) {
-  const info = await config.connection.getAccountInfo(mintPk);
+  const info = await getAccountInfoCached(config.connection, mintPk);
   if (!info) throw new Error('mint_not_found');
   if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
   if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;

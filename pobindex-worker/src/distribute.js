@@ -30,12 +30,10 @@ const {
 
 const config = require('./config');
 const { logEvent, withTimeout, retry, sleep, formatSol, lamportsToSol } = require('./utils');
+const { getAccountInfoCached, getMultipleAccountsInfoChunked } = require('./rpc-account-cache');
 const raydium = require('./raydium');
 const jupiter = require('./jupiter');
 const SOL_MINT = raydium.SOL_MINT;
-
-// Cache of mint → programId to avoid repeated RPC calls within a cycle
-const _mintProgramCache = new Map();
 
 /**
  * Returns TOKEN_2022_PROGRAM_ID or TOKEN_PROGRAM_ID based on the mint's on-chain owner.
@@ -43,14 +41,11 @@ const _mintProgramCache = new Map();
  */
 async function getTokenProgramId(mintPubkey) {
   const key = mintPubkey.toBase58();
-  if (_mintProgramCache.has(key)) return _mintProgramCache.get(key);
-
   try {
-    const info = await config.connection.getAccountInfo(mintPubkey);
+    const info = await getAccountInfoCached(config.connection, mintPubkey);
     const programId = info?.owner?.equals(TOKEN_2022_PROGRAM_ID)
       ? TOKEN_2022_PROGRAM_ID
       : TOKEN_PROGRAM_ID;
-    _mintProgramCache.set(key, programId);
     logEvent('info', `[TokenProgram] ${key.slice(0, 8)}… → ${programId.equals(TOKEN_2022_PROGRAM_ID) ? 'Token-2022' : 'Legacy SPL'}`);
     return programId;
   } catch {
@@ -532,28 +527,38 @@ async function executeTokenGroupDistribution(devKeypair, outputMint, holders, la
   const permanentSolFallback = []; // ATA creation disabled or lookup failed
   const ataHistoryUpdates  = {};  // incremental changes to persist after cycle
 
-  // ── Step 1: ATA check ──────────────────────────────────────────────────────
-  await Promise.all(holders.map(async holder => {
+  // ── Step 1: ATA check (batched getMultipleAccounts — one RPC per ~99 ATAs) ──
+  const holderRows = [];
+  for (const holder of holders) {
     try {
       const holderPub = new PublicKey(holder.address);
-      const ataAddr   = getAssociatedTokenAddressSync(mintPubkey, holderPub, true, programId);
-      const info      = await config.connection.getAccountInfo(ataAddr).catch(() => null);
-
+      const ataAddr = getAssociatedTokenAddressSync(mintPubkey, holderPub, true, programId);
+      holderRows.push({ holder, holderPub, ataAddr });
+    } catch (e) {
+      logEvent('warn', `[${label}] ATA derive failed for ${holder.address.slice(0, 8)}: ${e.message}`);
+      permanentSolFallback.push(holder);
+    }
+  }
+  const ataAddrs = holderRows.map((r) => r.ataAddr);
+  const ataInfos = ataAddrs.length
+    ? await getMultipleAccountsInfoChunked(config.connection, ataAddrs, 'confirmed')
+    : [];
+  for (let i = 0; i < holderRows.length; i++) {
+    const { holder, ataAddr } = holderRows[i];
+    const info = ataInfos[i];
+    try {
       if (info) {
-        // ATA exists — all good
         withAta.push({ ...holder, holderAta: ataAddr });
       } else if ((ataHistory[holder.address] || 0) >= 1) {
-        // We already paid to create this ATA and they burned it — blacklisted
         logEvent('warn', `[${label}] Holder burned their ATA — SOL fallback (blacklisted)`, {
           holder: holder.address.slice(0, 8),
           creations: ataHistory[holder.address],
         });
         burnedAtaHolders.push(holder);
       } else if (autoCreateAtas) {
-        // Never created before — create now
         logEvent('info', `[${label}] Holder needs ATA — will create`, { holder: holder.address.slice(0, 8) });
         needsAta.push({ address: holder.address, ataAddr });
-        withAta.push({ ...holder, holderAta: ataAddr }); // optimistic
+        withAta.push({ ...holder, holderAta: ataAddr });
       } else {
         logEvent('info', `[${label}] No ATA — SOL fallback`, { holder: holder.address.slice(0, 8) });
         permanentSolFallback.push(holder);
@@ -562,7 +567,7 @@ async function executeTokenGroupDistribution(devKeypair, outputMint, holders, la
       logEvent('warn', `[${label}] ATA lookup failed for ${holder.address.slice(0, 8)}: ${e.message}`);
       permanentSolFallback.push(holder);
     }
-  }));
+  }
 
   logEvent('info', `[${label}] ATA check: ${withAta.length} ready, ${needsAta.length} to create, ${burnedAtaHolders.length} blacklisted (burned), ${permanentSolFallback.length} other fallback`);
 

@@ -20,6 +20,7 @@ const {
 
 const config = require('./config');
 const { logEvent, formatSol } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 const { swapSolToToken } = require('./distribute');
 const { resolveStakingConfig, depositCreatorFeesToPool } = require('./stake-distribute');
 const { loadCurrentBasket } = require('./basket');
@@ -183,7 +184,7 @@ function allocateBudgets(entries, distLamports, minLamports = MIN_SPEND_LAMPORTS
 }
 
 async function getTokenProgramForMint(mintPk) {
-  const info = await config.connection.getAccountInfo(mintPk);
+  const info = await getAccountInfoCached(config.connection, mintPk);
   if (!info) throw new Error(`Mint ${mintPk.toBase58()} not found on discovery cluster`);
   if (info.owner.equals(TOKEN_2022_PROGRAM_ID)) return TOKEN_2022_PROGRAM_ID;
   if (info.owner.equals(TOKEN_PROGRAM_ID)) return TOKEN_PROGRAM_ID;

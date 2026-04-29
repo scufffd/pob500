@@ -37,6 +37,7 @@ const BN = require('bn.js');
 
 const config = require('./config');
 const { logEvent } = require('./utils');
+const { getAccountInfoCached } = require('./rpc-account-cache');
 const { resolveStakingConfig } = require('./stake-distribute');
 
 const TX_PACKET_BUDGET = 1200;
@@ -70,7 +71,7 @@ async function getProgramContext(treasury) {
 
   // Detect stake-mint token program once.
   const stakeMint = cfg.stakeMint;
-  const info = await config.stakeConnection.getAccountInfo(stakeMint);
+  const info = await getAccountInfoCached(config.stakeConnection, stakeMint);
   if (!info) throw new Error('stake_mint_not_found_on_stake_cluster');
   const stakeTokenProgram = info.owner.equals(TOKEN_2022_PROGRAM_ID)
     ? TOKEN_2022_PROGRAM_ID

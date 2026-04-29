@@ -51,29 +51,38 @@ async function fetchPrintrCustodyStakePct(connection, mintStr) {
   if (total <= 0n) return { stakedPct: 0, printrLargestHolders: 0 };
 
   const ownerToProgram = new Map();
-  async function programIdForAuth(ownerStr) {
-    if (ownerToProgram.has(ownerStr)) return ownerToProgram.get(ownerStr);
-    const ai = await connection.getAccountInfo(new PublicKey(ownerStr));
-    const id = ai?.owner?.toBase58() || '';
-    ownerToProgram.set(ownerStr, id);
-    return id;
-  }
-
-  let staked = 0n;
-  let printrLargestHolders = 0;
   const rows = largest.value || [];
 
+  /** @type {{ amount: string, owner: string }[]} */
+  const parsedRows = [];
   for (const part of _chunk(rows, 10)) {
-    const pas = await Promise.all(part.map(v => connection.getParsedAccountInfo(v.address)));
+    const pas = await Promise.all(part.map((v) => connection.getParsedAccountInfo(v.address)));
     for (let j = 0; j < part.length; j++) {
       const v = part[j];
       const p = pas[j].value;
       const owner = p?.data?.parsed?.info?.owner;
       if (!owner) continue;
-      if ((await programIdForAuth(String(owner))) !== PRINTR_SVM_PROGRAM_ID) continue;
-      staked += BigInt(v.amount);
-      printrLargestHolders++;
+      parsedRows.push({ amount: String(v.amount), owner: String(owner) });
     }
+  }
+
+  const ownerList = [...new Set(parsedRows.map((r) => r.owner))].map((s) => new PublicKey(s));
+  const OWNER_CHUNK = 99;
+  for (let i = 0; i < ownerList.length; i += OWNER_CHUNK) {
+    const slice = ownerList.slice(i, i + OWNER_CHUNK);
+    const infos = await connection.getMultipleAccountsInfo(slice, 'confirmed');
+    for (let k = 0; k < slice.length; k++) {
+      const id = infos[k]?.owner?.toBase58() || '';
+      ownerToProgram.set(slice[k].toBase58(), id);
+    }
+  }
+
+  let staked = 0n;
+  let printrLargestHolders = 0;
+  for (const row of parsedRows) {
+    if ((ownerToProgram.get(row.owner) || '') !== PRINTR_SVM_PROGRAM_ID) continue;
+    staked += BigInt(row.amount);
+    printrLargestHolders++;
   }
 
   const bps = Number((staked * 10_000n) / total) / 100;

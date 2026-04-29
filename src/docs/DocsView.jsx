@@ -628,6 +628,47 @@ export default function DocsView({ payload }) {
           </Card>
         </section>
 
+        <section id="partner-api">
+          <Card accent="rgba(0,245,255,.12)">
+            <H accent={C.cyan}>Partner API</H>
+            <Title>Embed staking stats (no secrets)</Title>
+            <P>
+              Other sites can show POB500 staking totals, lock mix, and staker counts using public
+              on-chain data aggregated by our worker. Nothing private is exposed — only addresses
+              and aggregates already visible on Solana.
+            </P>
+            <P>
+              <b style={{ color: "#fff" }}>JSON:</b>{" "}
+              <Code>GET https://pob500.com/api/stake-public</Code> — same shape as the{" "}
+              <Code>pool</Code> object inside <Code>pobindex-data.json</Code>, with CORS enabled for
+              browsers.
+            </P>
+            <P>
+              <b style={{ color: "#fff" }}>Drop-in widget:</b> add a mount node and load the hosted
+              script from our domain so partners always get the latest snippet.
+            </P>
+            <pre
+              className="mono"
+              style={{
+                marginTop: 10,
+                padding: 14,
+                borderRadius: 10,
+                background: "rgba(0,0,0,.35)",
+                border: "1px solid rgba(255,255,255,.08)",
+                fontSize: 11,
+                lineHeight: 1.5,
+                color: "rgba(255,255,255,.72)",
+                overflow: "auto",
+              }}
+            >{`<div id="pob500-stake-embed"></div>
+<script src="https://pob500.com/embed/pob500-stake-snippet.js" defer></script>`}</pre>
+            <div style={{ marginTop: 10, fontSize: 12, color: "rgba(255,255,255,.42)" }}>
+              Optional: <Code>data-api-base</Code> and <Code>data-target</Code> on the script tag for
+              a staging host or a different CSS selector.
+            </div>
+          </Card>
+        </section>
+
         <section id="contracts">
           <Card>
             <H accent={C.cyan}>On-chain</H>

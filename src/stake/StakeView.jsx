@@ -8,8 +8,9 @@ import {
   createAssociatedTokenAccountInstruction,
   getAccount,
   getAssociatedTokenAddressSync,
-  getMint,
   getTokenMetadata,
+  unpackMint,
+  unpackAccount,
 } from '@solana/spl-token';
 import BN from 'bn.js';
 
@@ -158,18 +159,30 @@ export default function StakeView() {
       // (below) have also loaded.
       const decimalsMap = {};
       const progMap = {};
-      await Promise.all(
-        rewardList.map(async (rm) => {
-          const progId = await detectTokenProgram(connection, rm.account.mint);
-          progMap[rm.publicKey.toBase58()] = progId;
-          try {
-            const m = await getMint(connection, rm.account.mint, 'confirmed', progId);
-            decimalsMap[rm.publicKey.toBase58()] = m.decimals;
-          } catch {
-            decimalsMap[rm.publicKey.toBase58()] = 9;
-          }
-        }),
-      );
+      const rewardMintPks = rewardList.map((rm) => rm.account.mint);
+      const mintFetchKeys = [stakeMint, ...rewardMintPks];
+      const mintInfos = [];
+      for (let mi = 0; mi < mintFetchKeys.length; mi += 99) {
+        const slice = mintFetchKeys.slice(mi, mi + 99);
+        mintInfos.push(...(await connection.getMultipleAccountsInfo(slice, 'confirmed')));
+      }
+      for (let i = 0; i < rewardList.length; i++) {
+        const rm = rewardList[i];
+        const info = mintInfos[i + 1];
+        const rmKey = rm.publicKey.toBase58();
+        if (!info || (!info.owner.equals(TOKEN_2022_PROGRAM_ID) && !info.owner.equals(TOKEN_PROGRAM_ID))) {
+          progMap[rmKey] = TOKEN_PROGRAM_ID;
+          decimalsMap[rmKey] = 9;
+          continue;
+        }
+        const progId = info.owner.equals(TOKEN_2022_PROGRAM_ID) ? TOKEN_2022_PROGRAM_ID : TOKEN_PROGRAM_ID;
+        progMap[rmKey] = progId;
+        try {
+          decimalsMap[rmKey] = unpackMint(rm.account.mint, info, progId).decimals;
+        } catch {
+          decimalsMap[rmKey] = 9;
+        }
+      }
 
       // Resolve on-chain ticker/name from the Token-2022 metadata pointer
       // extension for every reward mint (and the stake mint). Printr tokens
@@ -200,47 +213,63 @@ export default function StakeView() {
 
       // Load every (position × reward mint) checkpoint BEFORE any setState so
       // the first render using the new rewardMints always has matching ck data.
-      const ckMap = {};
-      await Promise.all(
-        positionList.flatMap((pos) =>
-          rewardList.map(async (rm) => {
-            const ck = await client.fetchCheckpoint(pos.publicKey, rm.publicKey);
-            if (ck) ckMap[`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`] = ck;
-          }),
-        ),
-      );
+      const ckMap = await client.fetchCheckpointMatrix(positionList, rewardList);
 
-      // Stake-mint wallet balance (for the "Your wallet" metric + stake form).
-      const mintInfo = await getMint(connection, stakeMint, 'confirmed', stakeTokenProgram);
-      const newStakeDecimals = mintInfo.decimals;
+      const stakeMintAcct = mintInfos[0];
+      let newStakeDecimals = 9;
+      try {
+        if (stakeMintAcct) {
+          newStakeDecimals = unpackMint(stakeMint, stakeMintAcct, stakeTokenProgram).decimals;
+        }
+      } catch {
+        newStakeDecimals = 9;
+      }
+
       const stakeAta = getAssociatedTokenAddressSync(stakeMint, publicKey, false, stakeTokenProgram);
+      const ataFetchKeys = [
+        stakeAta,
+        ...rewardList.map((rm) =>
+          getAssociatedTokenAddressSync(
+            rm.account.mint,
+            publicKey,
+            false,
+            progMap[rm.publicKey.toBase58()],
+          ),
+        ),
+      ];
+      const ataInfos = [];
+      for (let ai = 0; ai < ataFetchKeys.length; ai += 99) {
+        const slice = ataFetchKeys.slice(ai, ai + 99);
+        ataInfos.push(...(await connection.getMultipleAccountsInfo(slice, 'confirmed')));
+      }
+
       let newStakeBalance;
       try {
-        const acc = await getAccount(connection, stakeAta, 'confirmed', stakeTokenProgram);
-        newStakeBalance = new BN(acc.amount.toString());
+        const sai = ataInfos[0];
+        if (!sai) newStakeBalance = new BN(0);
+        else newStakeBalance = new BN(unpackAccount(stakeAta, sai, stakeTokenProgram).amount.toString());
       } catch {
         newStakeBalance = new BN(0);
       }
 
-      // Wallet balances for every reward-mint ATA so the UI can surface what
-      // the worker's claim_push has already delivered. After a push, pending
-      // always returns to 0 (correct on-chain state) — showing "In wallet"
-      // prevents users from thinking nothing is happening.
       const walletBalancesByMint = {};
-      await Promise.all(
-        rewardList.map(async (rm) => {
-          const mintB58 = rm.account.mint.toBase58();
-          const prog = progMap[rm.publicKey.toBase58()];
-          if (!prog) return;
-          const ata = getAssociatedTokenAddressSync(rm.account.mint, publicKey, false, prog);
-          try {
-            const acc = await getAccount(connection, ata, 'confirmed', prog);
-            walletBalancesByMint[mintB58] = new BN(acc.amount.toString());
-          } catch {
-            walletBalancesByMint[mintB58] = new BN(0);
-          }
-        }),
-      );
+      for (let wi = 0; wi < rewardList.length; wi++) {
+        const rm = rewardList[wi];
+        const mintB58 = rm.account.mint.toBase58();
+        const prog = progMap[rm.publicKey.toBase58()];
+        if (!prog) continue;
+        const ata = ataFetchKeys[wi + 1];
+        const info = ataInfos[wi + 1];
+        if (!info) {
+          walletBalancesByMint[mintB58] = new BN(0);
+          continue;
+        }
+        try {
+          walletBalancesByMint[mintB58] = new BN(unpackAccount(ata, info, prog).amount.toString());
+        } catch {
+          walletBalancesByMint[mintB58] = new BN(0);
+        }
+      }
 
       // Commit everything in one pass. React 18 batches these synchronous sets
       // into a single render, so consumers never see positions/rewardMints
@@ -265,9 +294,28 @@ export default function StakeView() {
   }, [ready, client, publicKey, connection, stakeMint, stakeTokenProgram]);
 
   useEffect(() => {
+    let id;
+    const arm = () => {
+      if (id) clearInterval(id);
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      id = setInterval(refresh, 45_000);
+    };
     refresh();
-    const id = setInterval(refresh, 20_000);
-    return () => clearInterval(id);
+    arm();
+    const onVis = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'visible') {
+        refresh();
+        arm();
+      } else {
+        if (id) clearInterval(id);
+        id = undefined;
+      }
+    };
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis);
+    return () => {
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis);
+      if (id) clearInterval(id);
+    };
   }, [refresh]);
 
   const handleStake = useCallback(async () => {

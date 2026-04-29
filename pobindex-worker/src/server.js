@@ -36,6 +36,44 @@ const PUBLIC = path.join(UI_ROOT, 'public');
 const app = express();
 app.use(express.json({ limit: '32kb' }));
 
+/** CORS for public partner endpoints (no secrets — on-chain addresses + aggregates only). */
+function allowPartnerCors(_req, res, next) {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+}
+
+app.options('/api/stake-public', allowPartnerCors, (_req, res) => res.sendStatus(204));
+
+app.get('/api/stake-public', allowPartnerCors, (req, res) => {
+  try {
+    const raw = JSON.parse(fs.readFileSync(config.POBINDEX_DATA_JSON, 'utf8'));
+    const pool = raw.pool;
+    const out = {
+      ok: true,
+      updatedAt: raw.updatedAt || null,
+      tokenSymbol: 'POB500',
+      stakeUrl: 'https://pob500.com/#stake',
+      programId: raw.stakeProgramId || pool?.programId || null,
+      stakeMint: raw.stakeMintAddress || pool?.stakeMint || null,
+      stakingPool: raw.stakingPool || pool?.pool || null,
+      pool,
+      links: {
+        stakeApp: 'https://pob500.com/#stake',
+        github: 'https://github.com/scufffd/pob500',
+      },
+    };
+    if (!pool || pool.initialized === false) {
+      out.ok = false;
+      out.reason = 'pool_not_initialized';
+    }
+    res.type('json').send(JSON.stringify(out));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: 'read_failed', message: e.message });
+  }
+});
+
 app.get('/api/pobindex', (req, res) => {
   const p = config.POBINDEX_DATA_JSON;
   try {
