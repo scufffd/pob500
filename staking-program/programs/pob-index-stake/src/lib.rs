@@ -148,7 +148,7 @@ pub mod pob_index_stake {
     /// Authority-gated per-position early-unstake penalty override.
     /// Lets the platform configure differentiated penalties per attribution
     /// category (presale vs KOL vs organic) without redeploying. Capped at
-    /// `MAX_EARLY_UNSTAKE_BPS` (50%). See
+    /// `MAX_EARLY_UNSTAKE_BPS` (90%). See
     /// `set_position_early_unstake_bps.rs` for the full rationale.
     pub fn set_position_early_unstake_bps(
         ctx: Context<SetPositionEarlyUnstakeBps>,

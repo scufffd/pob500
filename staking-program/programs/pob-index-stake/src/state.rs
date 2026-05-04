@@ -37,10 +37,12 @@ pub fn multiplier_bps_for_days(days: u32) -> Option<u32> {
 pub const EARLY_UNSTAKE_PENALTY_BPS: u32 = 1_000; // 10.00%
 
 /// Hard ceiling for any per-position or per-pool early-unstake bps override.
-/// Capped at 50% so a compromised authority cannot configure a 100%-penalty
-/// rug. Anything above this in `set_position_early_unstake_bps` /
+/// Capped at 90% — high enough to be a meaningful anti-dump deterrent for
+/// KOL / presale allocations (a KOL up 1000% who unstakes early still walks
+/// with ~110% gain at 90%), low enough that the position can never hit a
+/// pure 100% rug. Anything above this in `set_position_early_unstake_bps` /
 /// `set_pool_default_early_unstake_bps` is rejected at validation time.
-pub const MAX_EARLY_UNSTAKE_BPS: u16 = 5_000; // 50.00%
+pub const MAX_EARLY_UNSTAKE_BPS: u16 = 9_000; // 90.00%
 
 /// Read the per-position early-unstake override bps from `position.reserved`.
 /// Layout: bytes 0..2 = `u16` LE override. `0` means "no override".

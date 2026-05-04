@@ -37,10 +37,13 @@ use crate::state::*;
 /// platform set at stake time).
 ///
 /// ## Safety cap
-/// The bps is capped at `MAX_EARLY_UNSTAKE_BPS` (5_000 = 50%) at the program
+/// The bps is capped at `MAX_EARLY_UNSTAKE_BPS` (9_000 = 90%) at the program
 /// level so a compromised authority cannot configure a 100%-penalty rug.
-/// `bps == 0` is allowed and means "clear the override / revert to pool
-/// default" — useful for one-off reverts without re-staking.
+/// 90% is high enough to be a meaningful anti-dump deterrent on free KOL
+/// allocations (a KOL up 1000% who exits early still walks with ~110%
+/// gain) while keeping the structural "you always get *something* back"
+/// guarantee. `bps == 0` is allowed and means "clear the override / revert
+/// to pool default" — useful for one-off reverts without re-staking.
 ///
 /// ## What this does NOT touch
 /// - `position.amount`, `effective`, `lock_*`, `closed`, `multiplier_bps` —

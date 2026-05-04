@@ -9,7 +9,7 @@ use crate::state::*;
 /// Early-unstake: exit a position BEFORE `lock_end`. Pays a penalty on the
 /// staked principal whose bps is resolved at call time as:
 ///   `position override (reserved[0..2]) > pool override (reserved[0..2]) > EARLY_UNSTAKE_PENALTY_BPS (10%)`
-/// — see `state::effective_early_unstake_bps`. Capped at 50% by the setter.
+/// — see `state::effective_early_unstake_bps`. Capped at 90% by the setter.
 ///
 /// ## Mechanics
 /// The refund (amount − penalty) is transferred from `stake_vault` back to the

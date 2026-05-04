@@ -22,9 +22,9 @@
 #     also resolve to "use global 10%".
 #
 # Sizing: v3 .so was ~488 KB; v4 .so is ~497 KB (one new ix, ~9 KB extra).
-# Currently-deployed ProgramData buffer is 492,000 bytes — needs an extend
-# of at least ~5 KB. We extend by 20 KB for headroom against future minor
-# tweaks before the next planned major upgrade.
+# Currently-deployed ProgramData buffer is 492,000 bytes — extend by exactly
+# 5,072 bytes (the minimum) to fit the new binary. Re-extend later if we
+# ever ship a v5 that grows again; rent on unused bytes is wasted SOL.
 #
 # Run from the staking-program directory of this repo.
 #
@@ -37,7 +37,11 @@ PROGRAM_ID="65YrGaBL5ukm4SVcsEBoUgnqTrNXy2pDiPKeQKjSexVA"
 AUTH_KEYPAIR="${AUTH_KEYPAIR:-./scripts/bank-starts-keypair.json}"
 SO_PATH="${SO_PATH:-./target/deploy/pob_index_stake.so}"
 RPC_URL="${RPC_URL:-https://api.mainnet-beta.solana.com}"
-EXTEND_BYTES=20000
+# Minimum extend: new .so is 497,072 bytes vs currently allocated 492,000 →
+# need exactly 5,072 more. Kept tight (no headroom) since `solana program
+# extend` is cheap and idempotent — we can always extend again on the next
+# upgrade rather than pre-paying rent on bytes we may never use.
+EXTEND_BYTES=5072
 
 if [[ "${1:-}" == "--help" ]]; then
   grep '^#' "$0" | head -50
