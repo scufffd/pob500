@@ -159,6 +159,132 @@
       "args": []
     },
     {
+      "name": "admin_reset_checkpoint",
+      "docs": [
+        "Surgically rewrite an existing `RewardCheckpoint`'s `acc_per_share`",
+        "(and zero its `claimable`). Used to fix wrongly-baselined checkpoints."
+      ],
+      "discriminator": [
+        203,
+        143,
+        148,
+        207,
+        207,
+        148,
+        54,
+        12
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint",
+            "position"
+          ]
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "reward_mint"
+        },
+        {
+          "name": "position"
+        },
+        {
+          "name": "checkpoint",
+          "writable": true,
+          "pda": {
+            "seeds": [
+              {
+                "kind": "const",
+                "value": [
+                  99,
+                  104,
+                  101,
+                  99,
+                  107,
+                  112,
+                  111,
+                  105,
+                  110,
+                  116
+                ]
+              },
+              {
+                "kind": "account",
+                "path": "position"
+              },
+              {
+                "kind": "account",
+                "path": "reward_mint"
+              }
+            ]
+          }
+        }
+      ],
+      "args": [
+        {
+          "name": "new_acc_per_share",
+          "type": "u128"
+        }
+      ]
+    },
+    {
+      "name": "admin_reset_reward_mint",
+      "docs": [
+        "Wipe a reward line's accumulator + ledger fields. Used after a",
+        "`sweep_reward_vault` to reset the math without redeploying the pool."
+      ],
+      "discriminator": [
+        175,
+        93,
+        206,
+        254,
+        39,
+        160,
+        165,
+        0
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "reward_mint",
+          "writable": true
+        }
+      ],
+      "args": [
+        {
+          "name": "new_acc_per_share",
+          "type": "u128"
+        },
+        {
+          "name": "new_total_deposited",
+          "type": "u64"
+        },
+        {
+          "name": "new_total_claimed",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "claim",
       "discriminator": [
         62,
@@ -599,6 +725,131 @@
       "args": []
     },
     {
+      "name": "redistribute_orphan",
+      "docs": [
+        "**Permissionless** orphan recovery — any caller can re-attribute",
+        "reward balance left behind by stakers who unstaked without claiming.",
+        "Math always favours current active stakers; over-specified amounts",
+        "revert with `InsufficientVaultForRedistribute`. See",
+        "`redistribute_orphan.rs` for the full protocol-level rationale."
+      ],
+      "discriminator": [
+        183,
+        141,
+        111,
+        181,
+        131,
+        101,
+        80,
+        142
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "reward_mint",
+          "writable": true
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "vault",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
+      "name": "set_paused",
+      "docs": [
+        "Flip `pool.paused`. The flag has been read by stake/stake_for since",
+        "v1, but no setter existed. See `set_paused.rs` for the runbook",
+        "context."
+      ],
+      "discriminator": [
+        91,
+        60,
+        125,
+        192,
+        176,
+        225,
+        166,
+        218
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "paused",
+          "type": "bool"
+        }
+      ]
+    },
+    {
+      "name": "set_pool_authority",
+      "docs": [
+        "Rotate `pool.authority`. See `set_pool_authority.rs` for rationale."
+      ],
+      "discriminator": [
+        34,
+        30,
+        182,
+        81,
+        149,
+        198,
+        62,
+        181
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "writable": true
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        }
+      ],
+      "args": [
+        {
+          "name": "new_authority",
+          "type": "pubkey"
+        }
+      ]
+    },
+    {
       "name": "stake",
       "discriminator": [
         206,
@@ -810,6 +1061,72 @@
       ]
     },
     {
+      "name": "sweep_reward_vault",
+      "docs": [
+        "Drain a reward vault to a specified ATA. Pool PDA signs the transfer.",
+        "`amount = 0` sweeps the full vault balance."
+      ],
+      "discriminator": [
+        78,
+        77,
+        49,
+        159,
+        153,
+        103,
+        27,
+        87
+      ],
+      "accounts": [
+        {
+          "name": "pool",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "authority",
+          "signer": true,
+          "relations": [
+            "pool"
+          ]
+        },
+        {
+          "name": "reward_mint"
+        },
+        {
+          "name": "mint",
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "vault",
+          "writable": true,
+          "relations": [
+            "reward_mint"
+          ]
+        },
+        {
+          "name": "recipient_ata",
+          "docs": [
+            "Destination ATA. Constraint enforces it's for the same mint, but it",
+            "can be owned by any wallet — typically a backup-treasury wallet for",
+            "stranded-fund recovery."
+          ],
+          "writable": true
+        },
+        {
+          "name": "token_program"
+        }
+      ],
+      "args": [
+        {
+          "name": "amount",
+          "type": "u64"
+        }
+      ]
+    },
+    {
       "name": "unstake",
       "discriminator": [
         90,
@@ -986,6 +1303,19 @@
   ],
   "events": [
     {
+      "name": "CheckpointAdminReset",
+      "discriminator": [
+        192,
+        174,
+        104,
+        223,
+        143,
+        141,
+        113,
+        71
+      ]
+    },
+    {
       "name": "CheckpointPrimed",
       "discriminator": [
         252,
@@ -1012,6 +1342,32 @@
       ]
     },
     {
+      "name": "OrphanRedistributed",
+      "discriminator": [
+        151,
+        161,
+        186,
+        29,
+        32,
+        28,
+        118,
+        70
+      ]
+    },
+    {
+      "name": "PoolAuthorityChanged",
+      "discriminator": [
+        220,
+        1,
+        235,
+        249,
+        72,
+        216,
+        156,
+        107
+      ]
+    },
+    {
       "name": "PoolInitialized",
       "discriminator": [
         100,
@@ -1022,6 +1378,45 @@
         198,
         254,
         229
+      ]
+    },
+    {
+      "name": "PoolPauseChanged",
+      "discriminator": [
+        123,
+        239,
+        186,
+        9,
+        230,
+        83,
+        135,
+        58
+      ]
+    },
+    {
+      "name": "RewardMintAdminReset",
+      "discriminator": [
+        28,
+        146,
+        105,
+        98,
+        155,
+        222,
+        58,
+        168
+      ]
+    },
+    {
+      "name": "RewardVaultSwept",
+      "discriminator": [
+        116,
+        211,
+        166,
+        73,
+        215,
+        156,
+        162,
+        164
       ]
     },
     {
@@ -1165,9 +1560,42 @@
       "code": 6014,
       "name": "WrongRewardRecipient",
       "msg": "Reward payout ATA must be owned by the position owner"
+    },
+    {
+      "code": 6015,
+      "name": "InsufficientVaultForRedistribute",
+      "msg": "Vault balance is less than the post-bump outstanding entitlement; specified amount exceeds the true orphan"
     }
   ],
   "types": [
+    {
+      "name": "CheckpointAdminReset",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "position",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "new_acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "zeroed_claimable",
+            "type": "u64"
+          }
+        ]
+      }
+    },
     {
       "name": "CheckpointPrimed",
       "type": {
@@ -1209,6 +1637,54 @@
       }
     },
     {
+      "name": "OrphanRedistributed",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "vault_balance",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolAuthorityChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_authority",
+            "type": "pubkey"
+          },
+          {
+            "name": "new_authority",
+            "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
       "name": "PoolInitialized",
       "type": {
         "kind": "struct",
@@ -1224,6 +1700,26 @@
           {
             "name": "stake_mint",
             "type": "pubkey"
+          }
+        ]
+      }
+    },
+    {
+      "name": "PoolPauseChanged",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_paused",
+            "type": "bool"
+          },
+          {
+            "name": "new_paused",
+            "type": "bool"
           }
         ]
       }
@@ -1318,6 +1814,78 @@
                 64
               ]
             }
+          }
+        ]
+      }
+    },
+    {
+      "name": "RewardMintAdminReset",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "old_acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "new_acc_per_share",
+            "type": "u128"
+          },
+          {
+            "name": "old_total_deposited",
+            "type": "u64"
+          },
+          {
+            "name": "new_total_deposited",
+            "type": "u64"
+          },
+          {
+            "name": "old_total_claimed",
+            "type": "u64"
+          },
+          {
+            "name": "new_total_claimed",
+            "type": "u64"
+          }
+        ]
+      }
+    },
+    {
+      "name": "RewardVaultSwept",
+      "type": {
+        "kind": "struct",
+        "fields": [
+          {
+            "name": "pool",
+            "type": "pubkey"
+          },
+          {
+            "name": "reward_mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "mint",
+            "type": "pubkey"
+          },
+          {
+            "name": "recipient",
+            "type": "pubkey"
+          },
+          {
+            "name": "amount",
+            "type": "u64"
+          },
+          {
+            "name": "vault_balance_before",
+            "type": "u64"
           }
         ]
       }

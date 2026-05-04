@@ -32,4 +32,6 @@ pub enum PobIndexStakeError {
     InvalidBeneficiary,
     #[msg("Reward payout ATA must be owned by the position owner")]
     WrongRewardRecipient,
+    #[msg("Vault balance is less than the post-bump outstanding entitlement; specified amount exceeds the true orphan")]
+    InsufficientVaultForRedistribute,
 }

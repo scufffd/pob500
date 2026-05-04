@@ -78,4 +78,68 @@ pub mod pob_index_stake {
     pub fn unstake_early(ctx: Context<UnstakeEarly>) -> Result<()> {
         unstake_early::handler(ctx)
     }
+
+    // ---- v2 admin instructions (added in upgrade for SQWARK remediation
+    // and ongoing operational headroom). All authority-gated. None modify
+    // the math used by the value-bearing instructions above. ----
+
+    /// Rotate `pool.authority`. See `set_pool_authority.rs` for rationale.
+    pub fn set_pool_authority(
+        ctx: Context<SetPoolAuthority>,
+        new_authority: Pubkey,
+    ) -> Result<()> {
+        set_pool_authority::handler(ctx, new_authority)
+    }
+
+    /// Flip `pool.paused`. The flag has been read by stake/stake_for since
+    /// v1, but no setter existed. See `set_paused.rs` for the runbook
+    /// context.
+    pub fn set_paused(ctx: Context<SetPaused>, paused: bool) -> Result<()> {
+        set_paused::handler(ctx, paused)
+    }
+
+    /// Drain a reward vault to a specified ATA. Pool PDA signs the transfer.
+    /// `amount = 0` sweeps the full vault balance.
+    pub fn sweep_reward_vault(ctx: Context<SweepRewardVault>, amount: u64) -> Result<()> {
+        sweep_reward_vault::handler(ctx, amount)
+    }
+
+    /// Surgically rewrite an existing `RewardCheckpoint`'s `acc_per_share`
+    /// (and zero its `claimable`). Used to fix wrongly-baselined checkpoints.
+    pub fn admin_reset_checkpoint(
+        ctx: Context<AdminResetCheckpoint>,
+        new_acc_per_share: u128,
+    ) -> Result<()> {
+        admin_reset_checkpoint::handler(ctx, new_acc_per_share)
+    }
+
+    /// Wipe a reward line's accumulator + ledger fields. Used after a
+    /// `sweep_reward_vault` to reset the math without redeploying the pool.
+    pub fn admin_reset_reward_mint(
+        ctx: Context<AdminResetRewardMint>,
+        new_acc_per_share: u128,
+        new_total_deposited: u64,
+        new_total_claimed: u64,
+    ) -> Result<()> {
+        admin_reset_reward_mint::handler(
+            ctx,
+            new_acc_per_share,
+            new_total_deposited,
+            new_total_claimed,
+        )
+    }
+
+    // ---- v3 instructions ----
+
+    /// **Permissionless** orphan recovery — any caller can re-attribute
+    /// reward balance left behind by stakers who unstaked without claiming.
+    /// Math always favours current active stakers; over-specified amounts
+    /// revert with `InsufficientVaultForRedistribute`. See
+    /// `redistribute_orphan.rs` for the full protocol-level rationale.
+    pub fn redistribute_orphan(
+        ctx: Context<RedistributeOrphan>,
+        amount: u64,
+    ) -> Result<()> {
+        redistribute_orphan::handler(ctx, amount)
+    }
 }
