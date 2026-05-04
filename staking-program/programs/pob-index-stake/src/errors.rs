@@ -34,4 +34,8 @@ pub enum PobIndexStakeError {
     WrongRewardRecipient,
     #[msg("Vault balance is less than the post-bump outstanding entitlement; specified amount exceeds the true orphan")]
     InsufficientVaultForRedistribute,
+    #[msg("Early-unstake bps override exceeds the protocol-level safety cap (50%)")]
+    EarlyUnstakeBpsTooHigh,
+    #[msg("Cannot modify a closed position")]
+    PositionAlreadyClosed,
 }

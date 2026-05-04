@@ -142,4 +142,18 @@ pub mod pob_index_stake {
     ) -> Result<()> {
         redistribute_orphan::handler(ctx, amount)
     }
+
+    // ---- v4 instructions ----
+
+    /// Authority-gated per-position early-unstake penalty override.
+    /// Lets the platform configure differentiated penalties per attribution
+    /// category (presale vs KOL vs organic) without redeploying. Capped at
+    /// `MAX_EARLY_UNSTAKE_BPS` (50%). See
+    /// `set_position_early_unstake_bps.rs` for the full rationale.
+    pub fn set_position_early_unstake_bps(
+        ctx: Context<SetPositionEarlyUnstakeBps>,
+        bps: u16,
+    ) -> Result<()> {
+        set_position_early_unstake_bps::handler(ctx, bps)
+    }
 }

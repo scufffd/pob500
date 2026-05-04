@@ -6,8 +6,10 @@ use anchor_spl::token_interface::{
 use crate::errors::PobIndexStakeError;
 use crate::state::*;
 
-/// Early-unstake: exit a position BEFORE `lock_end`. Pays a flat
-/// EARLY_UNSTAKE_PENALTY_BPS (10%) penalty on the staked principal.
+/// Early-unstake: exit a position BEFORE `lock_end`. Pays a penalty on the
+/// staked principal whose bps is resolved at call time as:
+///   `position override (reserved[0..2]) > pool override (reserved[0..2]) > EARLY_UNSTAKE_PENALTY_BPS (10%)`
+/// — see `state::effective_early_unstake_bps`. Capped at 50% by the setter.
 ///
 /// ## Mechanics
 /// The refund (amount − penalty) is transferred from `stake_vault` back to the
@@ -94,7 +96,14 @@ pub fn handler(ctx: Context<UnstakeEarly>) -> Result<()> {
 
     let amount = position.amount;
     let effective = position.effective;
-    let (penalty, refund) = compute_early_unstake_penalty(amount);
+    // v4: bps is per-position-overrideable (set via set_position_early_unstake_bps).
+    // Falls back to pool override, then to the 10% global default. See
+    // state::effective_early_unstake_bps. `&*position` re-borrows the
+    // outstanding `&mut Account<...>` as a `&Account<...>` so the helper can
+    // deref-coerce to `&StakePosition` without conflicting with the mut
+    // borrow we still need below for closing the position.
+    let bps = effective_early_unstake_bps(&ctx.accounts.pool, &*position);
+    let (penalty, refund) = compute_early_unstake_penalty_bps(amount, bps);
     require!(refund > 0, PobIndexStakeError::ZeroAmount);
 
     // Pre-compute signer seeds so both CPIs below can reuse them.
@@ -167,6 +176,7 @@ pub fn handler(ctx: Context<UnstakeEarly>) -> Result<()> {
         refund,
         redistributed,
         pool_total_effective_after: pool.total_effective,
+        penalty_bps_applied: bps,
     });
     Ok(())
 }
@@ -180,4 +190,8 @@ pub struct UnstakedEarly {
     pub refund: u64,
     pub redistributed: bool,
     pub pool_total_effective_after: u128,
+    /// v4: the bps actually applied to the principal (resolved via
+    /// `effective_early_unstake_bps`). Older clients ignore this field; new
+    /// indexers can use it to break out per-attribution-category fee revenue.
+    pub penalty_bps_applied: u32,
 }

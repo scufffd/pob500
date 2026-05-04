@@ -9,6 +9,7 @@ pub mod prime_checkpoint;
 pub mod redistribute_orphan;
 pub mod set_paused;
 pub mod set_pool_authority;
+pub mod set_position_early_unstake_bps;
 pub mod stake;
 pub mod stake_for;
 pub mod sweep_reward_vault;
@@ -41,6 +42,8 @@ pub use redistribute_orphan::*;
 pub use set_paused::*;
 #[allow(ambiguous_glob_reexports)]
 pub use set_pool_authority::*;
+#[allow(ambiguous_glob_reexports)]
+pub use set_position_early_unstake_bps::*;
 #[allow(ambiguous_glob_reexports)]
 pub use stake::*;
 #[allow(ambiguous_glob_reexports)]

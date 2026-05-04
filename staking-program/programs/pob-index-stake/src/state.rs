@@ -31,18 +31,75 @@ pub fn multiplier_bps_for_days(days: u32) -> Option<u32> {
 /// The penalty is redistributed to remaining stakers via the stake-mint reward
 /// line; see `instructions/unstake_early.rs`. Rewards already accrued are
 /// always claimable in full — the penalty only touches principal.
+///
+/// This is the **fallback** value used when neither the position nor the pool
+/// has an override set. See `effective_early_unstake_bps`.
 pub const EARLY_UNSTAKE_PENALTY_BPS: u32 = 1_000; // 10.00%
 
-/// Compute the penalty amount and the net refund for an early unstake.
-/// Returns `(penalty, refund)` where `penalty + refund == amount` (modulo
-/// rounding — integer math rounds the penalty down).
-pub fn compute_early_unstake_penalty(amount: u64) -> (u64, u64) {
+/// Hard ceiling for any per-position or per-pool early-unstake bps override.
+/// Capped at 50% so a compromised authority cannot configure a 100%-penalty
+/// rug. Anything above this in `set_position_early_unstake_bps` /
+/// `set_pool_default_early_unstake_bps` is rejected at validation time.
+pub const MAX_EARLY_UNSTAKE_BPS: u16 = 5_000; // 50.00%
+
+/// Read the per-position early-unstake override bps from `position.reserved`.
+/// Layout: bytes 0..2 = `u16` LE override. `0` means "no override".
+pub fn read_position_override_bps(position: &StakePosition) -> u16 {
+    u16::from_le_bytes([position.reserved[0], position.reserved[1]])
+}
+
+/// Write the per-position early-unstake override bps into `position.reserved`.
+/// Caller is responsible for validating `bps <= MAX_EARLY_UNSTAKE_BPS`.
+pub fn write_position_override_bps(position: &mut StakePosition, bps: u16) {
+    let bytes = bps.to_le_bytes();
+    position.reserved[0] = bytes[0];
+    position.reserved[1] = bytes[1];
+}
+
+/// Read the per-pool default early-unstake override bps from `pool.reserved`.
+/// Layout: bytes 0..2 = `u16` LE override. `0` means "no override".
+pub fn read_pool_override_bps(pool: &StakePool) -> u16 {
+    u16::from_le_bytes([pool.reserved[0], pool.reserved[1]])
+}
+
+/// Write the per-pool default early-unstake override bps into `pool.reserved`.
+pub fn write_pool_override_bps(pool: &mut StakePool, bps: u16) {
+    let bytes = bps.to_le_bytes();
+    pool.reserved[0] = bytes[0];
+    pool.reserved[1] = bytes[1];
+}
+
+/// Resolve the effective early-unstake bps for an unstake_early call.
+/// Precedence: `position override > pool override > global EARLY_UNSTAKE_PENALTY_BPS`.
+pub fn effective_early_unstake_bps(pool: &StakePool, position: &StakePosition) -> u32 {
+    let pos_bps = read_position_override_bps(position);
+    if pos_bps > 0 {
+        return pos_bps as u32;
+    }
+    let pool_bps = read_pool_override_bps(pool);
+    if pool_bps > 0 {
+        return pool_bps as u32;
+    }
+    EARLY_UNSTAKE_PENALTY_BPS
+}
+
+/// Compute the penalty amount and the net refund for an early unstake using
+/// the effective bps. Returns `(penalty, refund)` where
+/// `penalty + refund == amount` (modulo integer rounding-down on penalty).
+pub fn compute_early_unstake_penalty_bps(amount: u64, bps: u32) -> (u64, u64) {
     let penalty = (amount as u128)
-        .saturating_mul(EARLY_UNSTAKE_PENALTY_BPS as u128)
+        .saturating_mul(bps as u128)
         / 10_000u128;
     let penalty = penalty as u64;
     let refund = amount.saturating_sub(penalty);
     (penalty, refund)
+}
+
+/// Backward-compatible wrapper using the global default bps. Retained for
+/// callers that pre-date the per-position override (none currently in-tree
+/// after v4 — kept for safety in case any downstream code still imports it).
+pub fn compute_early_unstake_penalty(amount: u64) -> (u64, u64) {
+    compute_early_unstake_penalty_bps(amount, EARLY_UNSTAKE_PENALTY_BPS)
 }
 
 #[account]
