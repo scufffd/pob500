@@ -25,23 +25,18 @@ use crate::state::*;
 /// — otherwise pre-existing checkpoints would compute a payout that the
 /// drained vault cannot honor (claim would fail with insufficient funds).
 ///
-/// ⚠️  NO PRINCIPAL GUARD: when `mint == pool.stake_mint` (the SQWARK case
-/// where the staked token is also registered as a reward line), the same
-/// vault holds BOTH (a) staker principal accounted for by
-/// `pool.total_staked` AND (b) reward/penalty balance from `unstake_early`
-/// redistribution. Calling this with `amount == 0` will drain ALL of it,
-/// including principal — leaving every active position unbacked. The
-/// remediation runbook (May 2026) had to do this intentionally for SQWARK
-/// and then return the principal manually from the recipient. A guarded
-/// version was prototyped (errors `WouldDrainPrincipal` when reward ==
-/// stake mint and amount > vault - total_staked) but not deployed; we
-/// keep the unrestricted behavior on-chain so future emergency scenarios
-/// retain full flexibility. When sweeping a stake-mint reward line:
-///   1. Either pass an explicit `amount = vault_balance - pool.total_staked`
-///   2. Or pass `0` and immediately return `pool.total_staked` worth from
-///      the recipient ATA back to the pool PDA in a follow-up transfer.
+/// PRINCIPAL GUARD: when `mint == pool.stake_mint` (the commingled case where
+/// the staked token is also registered as a reward line), the same vault holds
+/// BOTH (a) staker principal accounted for by `pool.total_staked` AND (b)
+/// reward/penalty balance from `unstake_early` redistribution. A sweep may now
+/// only remove the reward SURPLUS (`vault_balance - pool.total_staked`); any
+/// `amount` (including `0` = "everything") that would dip into principal is
+/// rejected with `RewardWouldTouchPrincipal`. This makes it impossible — even
+/// for a compromised authority key — to drain staked principal via sweep. If a
+/// genuine emergency ever requires touching principal, that must be done via a
+/// deliberate program upgrade, not a single signed instruction.
 ///
-/// `amount` of `0` means "sweep everything currently in the vault".
+/// `amount` of `0` means "sweep all reward surplus currently in the vault".
 #[derive(Accounts)]
 pub struct SweepRewardVault<'info> {
     #[account(
@@ -77,10 +72,20 @@ pub struct SweepRewardVault<'info> {
 
 pub fn handler(ctx: Context<SweepRewardVault>, amount: u64) -> Result<()> {
     let vault_balance = ctx.accounts.vault.amount;
-    let send_amount = if amount == 0 {
-        vault_balance
+
+    // PRINCIPAL GUARD: for the commingled stake-mint reward line, only the
+    // reward surplus above `pool.total_staked` is sweepable. Otherwise the full
+    // vault balance is.
+    let sweepable = if ctx.accounts.vault.key() == ctx.accounts.pool.stake_vault {
+        vault_balance.saturating_sub(ctx.accounts.pool.total_staked)
     } else {
-        require!(amount <= vault_balance, PobIndexStakeError::ZeroAmount);
+        vault_balance
+    };
+
+    let send_amount = if amount == 0 {
+        sweepable
+    } else {
+        require!(amount <= sweepable, PobIndexStakeError::RewardWouldTouchPrincipal);
         amount
     };
     require!(send_amount > 0, PobIndexStakeError::ZeroAmount);

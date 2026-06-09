@@ -96,13 +96,16 @@ pub fn handler(ctx: Context<UnstakeEarly>) -> Result<()> {
 
     let amount = position.amount;
     let effective = position.effective;
-    // v4: bps is per-position-overrideable (set via set_position_early_unstake_bps).
-    // Falls back to pool override, then to the 10% global default. See
-    // state::effective_early_unstake_bps. `&*position` re-borrows the
+    // bps precedence (see state::effective_early_unstake_bps):
+    //   1. per-position fixed override (set_position_early_unstake_bps)
+    //   2. v5 linear time-decay curve (50% at lock_start → 10% at lock_end)
+    //   3. per-pool fixed override
+    //   4. flat 10% global default (pre-v5 positions)
+    // `&*position` re-borrows the
     // outstanding `&mut Account<...>` as a `&Account<...>` so the helper can
     // deref-coerce to `&StakePosition` without conflicting with the mut
     // borrow we still need below for closing the position.
-    let bps = effective_early_unstake_bps(&ctx.accounts.pool, &*position);
+    let bps = effective_early_unstake_bps(&ctx.accounts.pool, &*position, now);
     let (penalty, refund) = compute_early_unstake_penalty_bps(amount, bps);
     require!(refund > 0, PobIndexStakeError::ZeroAmount);
 

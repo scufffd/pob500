@@ -50,6 +50,42 @@ function loadIdl(programId) {
   return { ...idl, address: programId.toBase58() };
 }
 
+// Round-robin cursor persistence. Without this, each push cycle rebuilds the
+// work list in the same (stable) order and only sends the first
+// POB_STAKE_PUSH_MAX_TX worth — so if active stakers ever exceed the per-cycle
+// cap, the same front positions get served every cycle and the tail is
+// permanently starved from auto-payout. We persist the last work key served per
+// pool and resume just after it next cycle, guaranteeing every position is
+// reached in rotation. The cursor is best-effort: a missing/corrupt file just
+// restarts from the top (no funds at risk — claim_push recipients are enforced
+// on-chain).
+const CURSOR_PATH = path.join(__dirname, '..', 'data', 'stake-push-cursor.json');
+
+function loadCursor(poolKey) {
+  try {
+    const all = JSON.parse(fs.readFileSync(CURSOR_PATH, 'utf8'));
+    return all && typeof all[poolKey] === 'string' ? all[poolKey] : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveCursor(poolKey, lastKey) {
+  let all = {};
+  try {
+    all = JSON.parse(fs.readFileSync(CURSOR_PATH, 'utf8')) || {};
+  } catch {
+    all = {};
+  }
+  all[poolKey] = lastKey;
+  try {
+    fs.mkdirSync(path.dirname(CURSOR_PATH), { recursive: true });
+    fs.writeFileSync(CURSOR_PATH, `${JSON.stringify(all, null, 2)}\n`);
+  } catch (e) {
+    logEvent('warn', 'stake-push: failed to persist round-robin cursor', { error: e.message });
+  }
+}
+
 /**
  * Batch-load mint accounts once per push cycle (instead of 2×N getAccountInfo).
  * @returns {Map<string, { tokenProgram: import('@solana/web3.js').PublicKey, hasTransferFee: boolean }>}
@@ -115,6 +151,10 @@ function packIxs(ixGroups, feePayer, recentBlockhash, priorityFeeIx) {
   current.feePayer = feePayer;
   current.recentBlockhash = recentBlockhash;
   if (priorityFeeIx) current.add(priorityFeeIx);
+  // Track how many input groups landed in `current`. Exposed on each returned
+  // tx as `_groupCount` so the caller can advance the round-robin cursor by the
+  // exact number of work items it actually sent (groups map 1:1 to work items).
+  let currentGroupCount = 0;
 
   const trySerialize = (tx) => {
     try {
@@ -132,15 +172,22 @@ function packIxs(ixGroups, feePayer, recentBlockhash, priorityFeeIx) {
       if (current.instructions.length === baseOverhead) {
         throw new Error(`Single group (${group.length} ixs) exceeds tx packet budget (size=${size})`);
       }
+      current._groupCount = currentGroupCount;
       txs.push(current);
       current = new Transaction();
       current.feePayer = feePayer;
       current.recentBlockhash = recentBlockhash;
       if (priorityFeeIx) current.add(priorityFeeIx);
       for (const ix of group) current.add(ix);
+      currentGroupCount = 1;
+    } else {
+      currentGroupCount += 1;
     }
   }
-  if (current.instructions.length > baseOverhead) txs.push(current);
+  if (current.instructions.length > baseOverhead) {
+    current._groupCount = currentGroupCount;
+    txs.push(current);
+  }
   return txs;
 }
 
@@ -207,11 +254,30 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
   // on first receive, requiring rent pre-funding).
   const mintMeta = await loadRewardMintMeta(connection, rewardMints);
 
+  // PRINCIPAL GUARD (worker side): never auto-push the reward line whose mint
+  // IS the stake mint. That line's reward "vault" is the same account as the
+  // stake vault, so it commingles staker principal with the early-unstake
+  // penalty pool. Auto-pushing it is what drained the pool — penalties bumped
+  // acc_per_share and claim_push then settled those "rewards" out of everyone
+  // else's principal. Those accruals are still claimable manually (the on-chain
+  // claim now refuses to dip below total_staked), but the worker must not force
+  // them out. All genuine reward lines (SOL/USDC/other tokens, separate vaults)
+  // are pushed as normal.
+  const stakeMintStr = cfg.stakeMint.toString();
+  const pushMints = rewardMints.filter((rm) => rm.account.mint.toString() !== stakeMintStr);
+  const skippedStakeMintLines = rewardMints.length - pushMints.length;
+  if (skippedStakeMintLines > 0) {
+    logEvent('info', 'stake-push: skipping commingled stake-mint reward line(s)', {
+      skipped: skippedStakeMintLines,
+      stakeMint: stakeMintStr,
+    });
+  }
+
   // One batched getMultipleAccounts per ~99 checkpoints instead of N×M RPCs.
   const checkpointAddrs = [];
   const checkpointKeys = [];
   for (const pos of active) {
-    for (const rm of rewardMints) {
+    for (const rm of pushMints) {
       checkpointAddrs.push(findCheckpointPda(cfg.programId, pos.publicKey, rm.publicKey));
       checkpointKeys.push(`${pos.publicKey.toBase58()}|${rm.publicKey.toBase58()}`);
     }
@@ -230,7 +296,7 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
   const toPrime = [];
   for (const pos of active) {
     const owner = pos.account.owner;
-    for (const rm of rewardMints) {
+    for (const rm of pushMints) {
       const rewardMintPk = rm.account.mint;
       const meta = mintMeta.get(rewardMintPk.toBase58());
       const tokenProgram = meta.tokenProgram;
@@ -246,7 +312,7 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
         toPrime.push({
           position: pos.publicKey,
           rewardMintPda: rm.publicKey,
-          checkpoint: ckPk,
+          checkpoint: findCheckpointPda(cfg.programId, pos.publicKey, rm.publicKey),
         });
         continue;
       }
@@ -336,12 +402,36 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
     };
   }
 
+  // Fairness: order work deterministically, then rotate to resume just after
+  // the last position served in the previous cycle (round-robin). This makes
+  // the per-cycle tx cap rotate across ALL active stakers instead of always
+  // serving the same front of the list.
+  const workKey = (w) => `${w.position.toBase58()}|${w.rewardMintPda.toBase58()}`;
+  work.sort((a, b) => {
+    const ka = workKey(a);
+    const kb = workKey(b);
+    return ka < kb ? -1 : ka > kb ? 1 : 0;
+  });
+  const poolKey = cfg.pool.toBase58();
+  const cursorKey = loadCursor(poolKey);
+  let orderedWork = work;
+  if (cursorKey) {
+    // Start at the first key strictly greater than the cursor; if the cursor is
+    // at/after the last key, wrap to the start of the list.
+    let startIdx = work.findIndex((w) => workKey(w) > cursorKey);
+    if (startIdx === -1) startIdx = 0;
+    if (startIdx > 0) {
+      orderedWork = work.slice(startIdx).concat(work.slice(0, startIdx));
+    }
+  }
+  const orderedKeys = orderedWork.map(workKey);
+
   // Build ixs in atomic groups: each group = [createAtaIdempotent, (optional
   // rent padding), claimPush] so packIxs can never split a claim_push away
   // from its ATA-create. The padding ensures Token-2022 can grow the ATA
   // in-place if the reward mint has TransferFeeConfig.
   const ixGroups = [];
-  for (const w of work) {
+  for (const w of orderedWork) {
     const group = [];
     group.push(
       createAssociatedTokenAccountIdempotentInstruction(
@@ -400,24 +490,53 @@ async function pushRewardClaims({ treasury, authority, primeOnly = false }) {
   const signatures = [];
 
   const signers = samePayerAndAuth ? [treasury] : [treasury, auth];
+  // `servedItems` counts the work items in successfully-confirmed txs, used to
+  // advance the round-robin cursor. We stop at the first failed tx so the
+  // cursor never skips past an item that wasn't actually paid — it will be
+  // retried from exactly that point next cycle.
+  let servedItems = 0;
+  let sendError = null;
   for (let i = 0; i < toSend.length; i++) {
     const tx = toSend[i];
     tx.lastValidBlockHeight = lastValidBlockHeight;
-    const sig = await sendAndConfirmTransaction(connection, tx, signers, {
-      commitment: 'confirmed',
-      skipPreflight: false,
-    });
-    signatures.push(sig);
+    try {
+      const sig = await sendAndConfirmTransaction(connection, tx, signers, {
+        commitment: 'confirmed',
+        skipPreflight: false,
+      });
+      signatures.push(sig);
+      servedItems += tx._groupCount || 0;
+    } catch (e) {
+      sendError = e.message || String(e);
+      logEvent('warn', 'stake-push: claim_push tx failed; halting cycle to preserve order', {
+        txIndex: i,
+        error: sendError,
+      });
+      break;
+    }
+  }
+
+  // Advance the cursor to the last work item we actually served, so next cycle
+  // resumes right after it. If nothing was served, leave the cursor untouched.
+  let cursorSavedTo = cursorKey || null;
+  if (servedItems > 0) {
+    cursorSavedTo = orderedKeys[Math.min(servedItems, orderedKeys.length) - 1];
+    saveCursor(poolKey, cursorSavedTo);
   }
 
   const out = {
     workQueued: work.length,
     txsPacked: txs.length,
-    txsSent: toSend.length,
+    txsSent: signatures.length,
     txsTruncated: Math.max(0, txs.length - toSend.length),
+    servedItems,
+    remainingItems: Math.max(0, work.length - servedItems),
+    cursorStart: cursorKey || null,
+    cursorSavedTo,
     primedCheckpoints: primedCount,
     signatures,
     positionsScanned: active.length,
+    ...(sendError ? { error: sendError } : {}),
   };
   logEvent('info', 'stake-push: reward claims pushed', out);
   return out;

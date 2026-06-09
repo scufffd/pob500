@@ -62,14 +62,15 @@ pub fn handler(ctx: Context<Stake>, amount: u64, lock_days: u32, _nonce: u64) ->
         .checked_add((lock_days as i64).checked_mul(86_400).ok_or(PobIndexStakeError::Overflow)?)
         .ok_or(PobIndexStakeError::Overflow)?;
 
-    let effective = (amount as u128)
-        .checked_mul(multiplier_bps as u128)
-        .and_then(|v| v.checked_div(10_000))
-        .ok_or(PobIndexStakeError::Overflow)?;
-
     // Transfer tokens from user into pool vault using transfer_checked so any
-    // transfer hooks / fee extensions on the mint are enforced.
+    // transfer hooks / fee extensions on the mint are enforced. We credit the
+    // amount the VAULT ACTUALLY RECEIVED (measured by balance delta), not the
+    // requested `amount` — otherwise a fee-on-transfer (Token-2022) stake mint
+    // would credit more principal than the vault holds, making the pool
+    // instantly insolvent and breaking the vault == total_staked + rewards
+    // invariant that the principal guard relies on.
     let decimals = ctx.accounts.stake_mint.decimals;
+    let vault_before = ctx.accounts.stake_vault.amount;
     let cpi = CpiContext::new(
         ctx.accounts.token_program.to_account_info(),
         TransferChecked {
@@ -80,6 +81,19 @@ pub fn handler(ctx: Context<Stake>, amount: u64, lock_days: u32, _nonce: u64) ->
         },
     );
     token_interface::transfer_checked(cpi, amount, decimals)?;
+    ctx.accounts.stake_vault.reload()?;
+    let amount = ctx
+        .accounts
+        .stake_vault
+        .amount
+        .checked_sub(vault_before)
+        .ok_or(PobIndexStakeError::Overflow)?;
+    require!(amount > 0, PobIndexStakeError::ZeroAmount);
+
+    let effective = (amount as u128)
+        .checked_mul(multiplier_bps as u128)
+        .and_then(|v| v.checked_div(10_000))
+        .ok_or(PobIndexStakeError::Overflow)?;
 
     let position = &mut ctx.accounts.position;
     position.bump = ctx.bumps.position;
@@ -93,6 +107,10 @@ pub fn handler(ctx: Context<Stake>, amount: u64, lock_days: u32, _nonce: u64) ->
     position.lock_end = lock_end;
     position.closed = false;
     position.reserved = [0u8; 32];
+    // v5: opt this position into the linear time-decay early-unstake curve
+    // (50% at lock_start → 10% at lock_end). Pre-v5 positions lack this flag
+    // and keep the flat 10% terms they were staked under.
+    write_position_dynamic_flag(position);
 
     let pool = &mut ctx.accounts.pool;
     pool.total_staked = pool

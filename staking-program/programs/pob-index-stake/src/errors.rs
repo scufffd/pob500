@@ -38,4 +38,6 @@ pub enum PobIndexStakeError {
     EarlyUnstakeBpsTooHigh,
     #[msg("Cannot modify a closed position")]
     PositionAlreadyClosed,
+    #[msg("Reward payout would dip into staked principal (commingled stake/reward vault has no reward surplus)")]
+    RewardWouldTouchPrincipal,
 }

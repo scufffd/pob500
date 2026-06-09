@@ -64,23 +64,28 @@ pub fn handler(ctx: Context<Claim>) -> Result<()> {
     let checkpoint = &mut ctx.accounts.checkpoint;
     let position = &ctx.accounts.position;
 
-    // Baseline-safe init: a fresh checkpoint snapshots the current
-    // acc_per_share so the holder only accrues rewards deposited AFTER this
-    // checkpoint exists. Without this, any user who stakes after a deposit
-    // has already bumped acc_per_share would retroactively claim those
-    // historical rewards (which belong to prior stakers). The stake
-    // instruction pre-creates checkpoints with the correct snapshot at
-    // stake-time; this branch is the backstop for positions that pre-date
-    // the prime_checkpoints upgrade or for reward mints added after stake.
-    if checkpoint.position == Pubkey::default() {
+    // Baseline-safe (re)init: a fresh checkpoint — OR one inherited by a reused
+    // position PDA (closed then re-staked under the same nonce) — snapshots the
+    // CURRENT acc_per_share so the holder only ever accrues rewards deposited
+    // AFTER this incarnation existed. Without the reuse branch, a re-staked
+    // position would retroactively claim the entire `acc_per_share` growth that
+    // happened while it did not exist (the over-claim that drove total_claimed
+    // past total_deposited). See `state::checkpoint_needs_rebaseline`.
+    let fresh = checkpoint.position == Pubkey::default();
+    if checkpoint_needs_rebaseline(checkpoint, position) {
         checkpoint.bump = ctx.bumps.checkpoint;
         checkpoint.position = position.key();
         checkpoint.reward_mint = reward_mint.key();
         checkpoint.acc_per_share = reward_mint.acc_per_share;
         checkpoint.claimable = 0;
-        checkpoint.total_claimed = 0;
-        checkpoint.reserved = [0u8; 16];
+        if fresh {
+            checkpoint.total_claimed = 0;
+        }
     }
+    // Stamp (or refresh) the position incarnation so any future PDA reuse is
+    // detected. Migration-safe: legacy checkpoints keep their accrued balance
+    // and are simply stamped here on first interaction.
+    set_checkpoint_incarnation(checkpoint, position.lock_start);
 
     // Accrue using (pool_acc - ckpt_acc) * effective / 1e18
     let delta = reward_mint
@@ -107,6 +112,31 @@ pub fn handler(ctx: Context<Claim>) -> Result<()> {
             amount: 0,
         });
         return Ok(());
+    }
+
+    // PRINCIPAL GUARD (commingled stake/reward vault).
+    //
+    // When the reward line being paid IS the stake mint, `reward_mint.vault`
+    // is the SAME account as `pool.stake_vault`: it holds both staker principal
+    // and the reward/penalty balance. A reward payout must never be funded from
+    // that principal — doing so is exactly the drain vector that emptied the
+    // pool (penalties bumped `acc_per_share`, then claim/claim_push paid those
+    // "rewards" out of everyone else's stake). Only the surplus above
+    // `pool.total_staked` is real, claimable reward liquidity.
+    //
+    // Separate (non-stake-mint) reward vaults hold no principal, so the guard is
+    // a no-op for them and all normal SOL/USDC/token reward claims still pay in
+    // full.
+    if ctx.accounts.vault.key() == ctx.accounts.pool.stake_vault {
+        let reward_liquidity = ctx
+            .accounts
+            .vault
+            .amount
+            .saturating_sub(ctx.accounts.pool.total_staked);
+        require!(
+            payout <= reward_liquidity,
+            PobIndexStakeError::RewardWouldTouchPrincipal
+        );
     }
 
     // Transfer from pool-owned vault to user. transfer_checked enforces decimals

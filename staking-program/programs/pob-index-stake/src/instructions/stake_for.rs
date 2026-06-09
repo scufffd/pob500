@@ -90,12 +90,10 @@ pub fn handler(
         )
         .ok_or(PobIndexStakeError::Overflow)?;
 
-    let effective = (amount as u128)
-        .checked_mul(multiplier_bps as u128)
-        .and_then(|v| v.checked_div(10_000))
-        .ok_or(PobIndexStakeError::Overflow)?;
-
+    // Credit the amount the vault actually received (balance delta), so a
+    // fee-on-transfer stake mint can never over-credit principal. See stake.rs.
     let decimals = ctx.accounts.stake_mint.decimals;
+    let vault_before = ctx.accounts.stake_vault.amount;
     let cpi = CpiContext::new(
         ctx.accounts.token_program.to_account_info(),
         TransferChecked {
@@ -106,6 +104,19 @@ pub fn handler(
         },
     );
     token_interface::transfer_checked(cpi, amount, decimals)?;
+    ctx.accounts.stake_vault.reload()?;
+    let amount = ctx
+        .accounts
+        .stake_vault
+        .amount
+        .checked_sub(vault_before)
+        .ok_or(PobIndexStakeError::Overflow)?;
+    require!(amount > 0, PobIndexStakeError::ZeroAmount);
+
+    let effective = (amount as u128)
+        .checked_mul(multiplier_bps as u128)
+        .and_then(|v| v.checked_div(10_000))
+        .ok_or(PobIndexStakeError::Overflow)?;
 
     let position = &mut ctx.accounts.position;
     position.bump = ctx.bumps.position;
@@ -119,6 +130,11 @@ pub fn handler(
     position.lock_end = lock_end;
     position.closed = false;
     position.reserved = [0u8; 32];
+    // v5: opt this position into the linear time-decay early-unstake curve.
+    // A subsequent `set_position_early_unstake_bps` (KOL / presale anti-dump)
+    // sets a fixed override which takes precedence over this flag, so flagging
+    // here is always safe.
+    write_position_dynamic_flag(position);
 
     let pool = &mut ctx.accounts.pool;
     pool.total_staked = pool

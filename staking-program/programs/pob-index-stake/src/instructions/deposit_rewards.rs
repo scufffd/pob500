@@ -45,6 +45,7 @@ pub fn handler(ctx: Context<DepositRewards>, amount: u64) -> Result<()> {
     );
 
     let decimals = ctx.accounts.mint.decimals;
+    let vault_before = ctx.accounts.vault.amount;
     let cpi = CpiContext::new(
         ctx.accounts.token_program.to_account_info(),
         TransferChecked {
@@ -55,6 +56,17 @@ pub fn handler(ctx: Context<DepositRewards>, amount: u64) -> Result<()> {
         },
     );
     token_interface::transfer_checked(cpi, amount, decimals)?;
+    // Credit only what the vault actually received (handles fee-on-transfer
+    // reward mints), so acc_per_share / total_deposited never over-promise
+    // more than the vault holds.
+    ctx.accounts.vault.reload()?;
+    let amount = ctx
+        .accounts
+        .vault
+        .amount
+        .checked_sub(vault_before)
+        .ok_or(PobIndexStakeError::Overflow)?;
+    require!(amount > 0, PobIndexStakeError::ZeroReward);
 
     let reward_mint = &mut ctx.accounts.reward_mint;
     let add: u128 = (amount as u128)

@@ -60,14 +60,20 @@ pub fn handler(ctx: Context<PrimeCheckpoint>) -> Result<()> {
     let position = &ctx.accounts.position;
     let reward_mint = &ctx.accounts.reward_mint;
 
-    if cp.position == Pubkey::default() {
+    // Baseline a fresh checkpoint, OR re-baseline one inherited by a reused
+    // position PDA (closed + re-staked under the same nonce). A legacy
+    // checkpoint whose incarnation still matches the live position is left
+    // untouched (its accrued balance is preserved) and only gets stamped below.
+    let fresh = cp.position == Pubkey::default();
+    if checkpoint_needs_rebaseline(cp, position) {
         cp.bump = ctx.bumps.checkpoint;
         cp.position = position.key();
         cp.reward_mint = reward_mint.key();
         cp.acc_per_share = reward_mint.acc_per_share;
         cp.claimable = 0;
-        cp.total_claimed = 0;
-        cp.reserved = [0u8; 16];
+        if fresh {
+            cp.total_claimed = 0;
+        }
 
         emit!(CheckpointPrimed {
             position: position.key(),
@@ -75,6 +81,10 @@ pub fn handler(ctx: Context<PrimeCheckpoint>) -> Result<()> {
             acc_per_share: reward_mint.acc_per_share,
         });
     }
+
+    // Stamp the live incarnation so future PDA reuse is detected. Idempotent
+    // for an already-correctly-stamped checkpoint; migration-safe for legacy.
+    set_checkpoint_incarnation(cp, position.lock_start);
 
     Ok(())
 }

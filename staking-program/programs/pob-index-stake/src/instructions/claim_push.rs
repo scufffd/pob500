@@ -78,15 +78,21 @@ pub fn handler(ctx: Context<ClaimPush>) -> Result<()> {
     let checkpoint = &mut ctx.accounts.checkpoint;
     let position = &ctx.accounts.position;
 
-    if checkpoint.position == Pubkey::default() {
+    // Re-baseline a fresh OR reused-PDA checkpoint to the current acc_per_share
+    // so a re-staked position cannot retroactively claim rewards from the window
+    // it did not exist. See `state::checkpoint_needs_rebaseline` and `claim.rs`.
+    let fresh = checkpoint.position == Pubkey::default();
+    if checkpoint_needs_rebaseline(checkpoint, position) {
         checkpoint.bump = ctx.bumps.checkpoint;
         checkpoint.position = position.key();
         checkpoint.reward_mint = reward_mint.key();
         checkpoint.acc_per_share = reward_mint.acc_per_share;
         checkpoint.claimable = 0;
-        checkpoint.total_claimed = 0;
-        checkpoint.reserved = [0u8; 16];
+        if fresh {
+            checkpoint.total_claimed = 0;
+        }
     }
+    set_checkpoint_incarnation(checkpoint, position.lock_start);
 
     let delta = reward_mint
         .acc_per_share
@@ -112,6 +118,23 @@ pub fn handler(ctx: Context<ClaimPush>) -> Result<()> {
             amount: 0,
         });
         return Ok(());
+    }
+
+    // PRINCIPAL GUARD (commingled stake/reward vault) — see `claim.rs` for the
+    // full rationale. When the reward line being pushed IS the stake mint, the
+    // reward vault is the stake vault and holds staker principal; only the
+    // surplus above `pool.total_staked` may be paid out. This blocks the
+    // auto-pusher from settling stake-mint "rewards" out of principal.
+    if ctx.accounts.vault.key() == ctx.accounts.pool.stake_vault {
+        let reward_liquidity = ctx
+            .accounts
+            .vault
+            .amount
+            .saturating_sub(ctx.accounts.pool.total_staked);
+        require!(
+            payout <= reward_liquidity,
+            PobIndexStakeError::RewardWouldTouchPrincipal
+        );
     }
 
     let stake_mint_key = ctx.accounts.pool.stake_mint;
